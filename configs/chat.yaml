@@ -1,0 +1,9 @@
+checkpoint_path: checkpoints/sft_tiny/best.pt
+tokenizer_model_path: data/processed/tokenizer.model
+system_prompt: You are a concise and helpful assistant.
+max_history_turns: 8
+temperature: 0.4
+top_k: 80
+max_new_tokens: 512
+json_mode: false
+device: auto
