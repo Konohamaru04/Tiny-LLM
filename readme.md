@@ -1,5 +1,9 @@
 # Tiny-LLM
 
+<p align="center">
+  <img src="Assets/logo.jpg" width="400"/>
+</p>
+
 A small, local GPT-style language model project built in pure PyTorch as part of my learning journey into language models, tokenization, training pipelines, and practical LLM engineering.
 
 This repository is focused on clarity over complexity. The goal was not to build the biggest model possible, but to understand the full workflow end to end:
