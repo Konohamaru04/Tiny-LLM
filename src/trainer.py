@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 import math
 import time
 from contextlib import nullcontext
@@ -11,13 +13,22 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.config import ModelConfig
+from src.evaluation import load_eval_prompts, run_generation_eval
+from src.tokenizer_utils import SentencePieceTokenizer
 from src.utils import (
     count_parameters,
     ensure_dir,
+    ensure_parent_dir,
     get_amp_settings,
     human_count,
     load_torch_checkpoint,
+    sha256_file,
+    resolve_path,
     save_torch_checkpoint,
+    stable_json_hash,
+    unwrap_model,
+    verify_checkpoint_fingerprints,
+    write_json,
 )
 
 
@@ -117,11 +128,38 @@ class Trainer:
         self.amp_enabled = amp["enabled"]
         self.amp_dtype = amp["dtype"]
         self.use_grad_scaler = amp["use_grad_scaler"]
-        self.scaler = torch.cuda.amp.GradScaler('cuda', enabled=self.use_grad_scaler)
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler(device.type, enabled=self.use_grad_scaler)
+        else:  # pragma: no cover
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_grad_scaler)
 
         self.output_dir = ensure_dir(self.training_config.output_dir)
         self.latest_path = self.output_dir / "latest.pt"
         self.best_path = self.output_dir / "best.pt"
+        self.metrics_jsonl_path = (
+            resolve_path(self.training_config.metrics_jsonl_path)
+            if getattr(self.training_config, "metrics_jsonl_path", "")
+            else self.output_dir / "metrics.jsonl"
+        )
+        self.metrics_csv_path = (
+            resolve_path(self.training_config.metrics_csv_path)
+            if getattr(self.training_config, "metrics_csv_path", "")
+            else self.output_dir / "metrics.csv"
+        )
+        self.sample_prompts_path = str(getattr(self.training_config, "sample_prompts_path", "") or "").strip()
+        self.sample_output_dir: Path | None = None
+        self.sample_prompts: list[dict[str, Any]] = []
+        self.sample_tokenizer: SentencePieceTokenizer | None = None
+
+        if self.sample_prompts_path:
+            self.sample_prompts = load_eval_prompts(self.sample_prompts_path)
+            sample_dir = (
+                resolve_path(self.training_config.sample_output_dir)
+                if getattr(self.training_config, "sample_output_dir", "")
+                else self.output_dir / "sample_generations"
+            )
+            self.sample_output_dir = ensure_dir(sample_dir)
+            self.sample_tokenizer = SentencePieceTokenizer(self.tokenizer_model_path)
 
         self.global_step = 0
         self.best_val_loss = float("inf")
@@ -131,12 +169,13 @@ class Trainer:
     def _autocast_context(self):
         if not self.amp_enabled:
             return nullcontext()
-        return torch.autocast(device_type="cuda", dtype=self.amp_dtype)
+        return torch.autocast(device_type=self.device.type, dtype=self.amp_dtype)
 
     def _checkpoint_state(self) -> dict[str, Any]:
+        raw_model = unwrap_model(self.model)
         return {
             "task_name": self.task_name,
-            "model_state": self.model.state_dict(),
+            "model_state": raw_model.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": self.scheduler.state_dict(),
             "scaler_state": self.scaler.state_dict() if self.scaler.is_enabled() else None,
@@ -147,6 +186,8 @@ class Trainer:
             "model_config": asdict(self.model_config),
             "training_config": asdict(self.training_config),
             "tokenizer_model_path": self.tokenizer_model_path,
+            "model_config_hash": stable_json_hash(self.model_config),
+            "tokenizer_sha256": sha256_file(self.tokenizer_model_path),
         }
 
     def save_checkpoint(self, path: str | Path, label: str) -> Path:
@@ -154,8 +195,88 @@ class Trainer:
         print(f"[checkpoint] saved {label}: {checkpoint_path}")
         return checkpoint_path
 
+    def _append_metrics_row(self, row: dict[str, Any]) -> None:
+        ensure_parent_dir(self.metrics_jsonl_path)
+        with self.metrics_jsonl_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        fieldnames = [
+            "step",
+            "event",
+            "task_name",
+            "train_loss",
+            "val_loss",
+            "val_perplexity",
+            "lr",
+            "tokens_per_sec",
+            "best_val_loss",
+            "bad_eval_count",
+        ]
+        ensure_parent_dir(self.metrics_csv_path)
+        csv_exists = self.metrics_csv_path.exists()
+        with self.metrics_csv_path.open("a", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not csv_exists:
+                writer.writeheader()
+            writer.writerow({key: row.get(key) for key in fieldnames})
+
+    def _record_metrics(
+        self,
+        event: str,
+        train_loss: float | None = None,
+        val_loss: float | None = None,
+        lr: float | None = None,
+        tokens_per_sec: float | None = None,
+    ) -> None:
+        row = {
+            "step": self.global_step,
+            "event": event,
+            "task_name": self.task_name,
+            "train_loss": None if train_loss is None else round(float(train_loss), 6),
+            "val_loss": None if val_loss is None else round(float(val_loss), 6),
+            "val_perplexity": None if val_loss is None else round(math.exp(min(float(val_loss), 20.0)), 6),
+            "lr": None if lr is None else float(lr),
+            "tokens_per_sec": None if tokens_per_sec is None else round(float(tokens_per_sec), 2),
+            "best_val_loss": round(float(self.best_val_loss), 6) if math.isfinite(self.best_val_loss) else None,
+            "bad_eval_count": int(self.bad_eval_count),
+        }
+        self._append_metrics_row(row)
+
+    def _save_eval_samples(self) -> None:
+        if not self.sample_prompts or self.sample_output_dir is None or self.sample_tokenizer is None:
+            return
+
+        summary, samples = run_generation_eval(
+            model=self.model,
+            tokenizer=self.sample_tokenizer,
+            prompts=self.sample_prompts,
+            device=self.device,
+            max_new_tokens=int(self.training_config.sample_max_new_tokens),
+            temperature=float(self.training_config.sample_temperature),
+            top_k=int(self.training_config.sample_top_k),
+            repetition_penalty=float(self.training_config.sample_repetition_penalty),
+            default_system_prompt=str(self.training_config.sample_system_prompt),
+            max_history_turns=int(self.training_config.sample_max_history_turns),
+            default_json_mode=bool(self.training_config.sample_json_mode),
+        )
+        payload = {
+            "task_name": self.task_name,
+            "step": self.global_step,
+            "summary": summary,
+            "samples": samples,
+        }
+        out_path = self.sample_output_dir / f"step_{self.global_step:07d}.json"
+        write_json(payload, out_path)
+        print(f"[sample] wrote {len(samples)} sample generations: {out_path}")
+
     def load_checkpoint(self, path: str | Path) -> None:
         state = load_torch_checkpoint(path, map_location="cpu")
+        verify_checkpoint_fingerprints(
+            state,
+            model_config=self.model_config,
+            tokenizer_model_path=self.tokenizer_model_path,
+            context="resume checkpoint",
+        )
 
         required = ["model_state", "optimizer_state", "scheduler_state", "global_step", "model_config"]
         missing = [key for key in required if key not in state]
@@ -164,7 +285,7 @@ class Trainer:
                 f"Checkpoint is missing required fields {missing}: {Path(path)}"
             )
 
-        self.model.load_state_dict(state["model_state"])
+        unwrap_model(self.model).load_state_dict(state["model_state"])
         self.optimizer.load_state_dict(state["optimizer_state"])
         self.scheduler.load_state_dict(state["scheduler_state"])
 
@@ -212,6 +333,13 @@ class Trainer:
             f"[train] amp_enabled={self.amp_enabled}, "
             f"amp_dtype={self.amp_dtype}, grad_scaler={self.scaler.is_enabled()}"
         )
+        print(f"[train] metrics_jsonl={self.metrics_jsonl_path}")
+        print(f"[train] metrics_csv={self.metrics_csv_path}")
+        if self.sample_prompts:
+            print(
+                f"[train] sample_prompts={self.sample_prompts_path} "
+                f"-> {self.sample_output_dir}"
+            )
 
         train_iter = infinite_loader(self.train_loader)
         self.model.train()
@@ -278,6 +406,12 @@ class Trainer:
                     f"lr={lr:.6e} "
                     f"tok/s={toks_per_sec:,.0f}"
                 )
+                self._record_metrics(
+                    event="train",
+                    train_loss=avg_loss,
+                    lr=lr,
+                    tokens_per_sec=toks_per_sec,
+                )
 
                 running_loss = 0.0
                 log_steps = 0
@@ -296,6 +430,7 @@ class Trainer:
             if should_eval:
                 self.last_val_loss = self.evaluate()
                 print(f"[eval] step={self.global_step:06d} val_loss={self.last_val_loss:.4f}")
+                current_lr = self.optimizer.param_groups[0]["lr"]
 
                 if self.last_val_loss < self.best_val_loss - 1e-6:
                     self.best_val_loss = self.last_val_loss
@@ -307,6 +442,13 @@ class Trainer:
                         f"[eval] no improvement. "
                         f"bad_eval_count={self.bad_eval_count}/{self.training_config.patience}"
                     )
+
+                self._record_metrics(
+                    event="eval",
+                    val_loss=self.last_val_loss,
+                    lr=current_lr,
+                )
+                self._save_eval_samples()
 
                 if self.training_config.patience > 0 and self.bad_eval_count >= self.training_config.patience:
                     self.save_checkpoint(self.latest_path, "latest")

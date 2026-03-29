@@ -61,6 +61,12 @@ class ModelConfig:
     mlp_ratio: int = 4
     dropout: float = 0.10
     tie_weights: bool = True
+    norm_type: str = "layernorm"
+    mlp_type: str = "gelu"
+    positional_embedding: str = "learned"
+    rope_theta: float = 10000.0
+    attention_impl: str = "auto"
+    gradient_checkpointing: bool = False
 
 
 @dataclass
@@ -93,6 +99,20 @@ class TrainConfig:
     patience: int = 5
     use_amp: bool = True
     resume_from: str = ""
+    metrics_jsonl_path: str = ""
+    metrics_csv_path: str = ""
+    sample_prompts_path: str = ""
+    sample_output_dir: str = ""
+    sample_system_prompt: str = "You are a concise and helpful assistant."
+    sample_max_history_turns: int = 0
+    sample_temperature: float = 0.4
+    sample_top_k: int = 50
+    sample_max_new_tokens: int = 128
+    sample_repetition_penalty: float = 1.0
+    sample_json_mode: bool = False
+    compile_model: bool = False
+    compile_backend: str = ""
+    compile_mode: str = ""
 
 
 @dataclass
@@ -130,6 +150,20 @@ class SFTTrainConfig:
     patience: int = 5
     use_amp: bool = True
     resume_from: str = ""
+    metrics_jsonl_path: str = ""
+    metrics_csv_path: str = ""
+    sample_prompts_path: str = ""
+    sample_output_dir: str = ""
+    sample_system_prompt: str = "You are a concise and helpful assistant."
+    sample_max_history_turns: int = 0
+    sample_temperature: float = 0.4
+    sample_top_k: int = 50
+    sample_max_new_tokens: int = 128
+    sample_repetition_penalty: float = 1.0
+    sample_json_mode: bool = False
+    compile_model: bool = False
+    compile_backend: str = ""
+    compile_mode: str = ""
 
 
 @dataclass
@@ -144,10 +178,15 @@ class ChatConfig:
     checkpoint_path: str = "checkpoints/sft_tiny/best.pt"
     tokenizer_model_path: str = "data/processed/tokenizer.model"
     system_prompt: str = "You are a concise and helpful assistant."
+    personas_path: str = "configs/personas.json"
+    default_persona: str = "technical"
+    session_file: str = ""
     max_history_turns: int = 4
     temperature: float = 0.8
     top_k: int = 50
     max_new_tokens: int = 128
+    repetition_penalty: float = 1.0
+    stream: bool = True
     json_mode: bool = False
     device: str = "auto"
 
@@ -189,6 +228,18 @@ def _validate_model_config(cfg: ModelConfig) -> None:
         raise ValueError("model.mlp_ratio must be >= 1")
     if not (0.0 <= cfg.dropout < 1.0):
         raise ValueError("model.dropout must be in [0.0, 1.0)")
+    if cfg.norm_type not in {"layernorm", "rmsnorm"}:
+        raise ValueError("model.norm_type must be 'layernorm' or 'rmsnorm'")
+    if cfg.mlp_type not in {"gelu", "swiglu"}:
+        raise ValueError("model.mlp_type must be 'gelu' or 'swiglu'")
+    if cfg.positional_embedding not in {"learned", "rope"}:
+        raise ValueError("model.positional_embedding must be 'learned' or 'rope'")
+    if cfg.rope_theta <= 0.0:
+        raise ValueError("model.rope_theta must be > 0")
+    if cfg.attention_impl not in {"auto", "manual", "sdpa"}:
+        raise ValueError("model.attention_impl must be 'auto', 'manual', or 'sdpa'")
+    if cfg.positional_embedding == "rope" and (cfg.n_embd // cfg.n_head) % 2 != 0:
+        raise ValueError("RoPE requires head_dim to be even.")
 
 
 def _validate_train_config(cfg: TrainConfig | SFTTrainConfig) -> None:
@@ -220,6 +271,16 @@ def _validate_train_config(cfg: TrainConfig | SFTTrainConfig) -> None:
         raise ValueError("training.num_workers must be >= 0")
     if cfg.patience < 0:
         raise ValueError("training.patience must be >= 0")
+    if cfg.sample_max_history_turns < 0:
+        raise ValueError("training.sample_max_history_turns must be >= 0")
+    if cfg.sample_temperature < 0.0:
+        raise ValueError("training.sample_temperature must be >= 0.0")
+    if cfg.sample_top_k < 0:
+        raise ValueError("training.sample_top_k must be >= 0")
+    if cfg.sample_max_new_tokens <= 0:
+        raise ValueError("training.sample_max_new_tokens must be > 0")
+    if cfg.sample_repetition_penalty < 1.0:
+        raise ValueError("training.sample_repetition_penalty must be >= 1.0")
 
 
 def load_tokenizer_config(path: str | Path) -> TokenizerConfig:
@@ -271,4 +332,6 @@ def load_chat_config(path: str | Path) -> ChatConfig:
         raise ValueError("top_k must be >= 0")
     if cfg.temperature < 0.0:
         raise ValueError("temperature must be >= 0.0")
+    if cfg.repetition_penalty < 1.0:
+        raise ValueError("repetition_penalty must be >= 1.0")
     return cfg

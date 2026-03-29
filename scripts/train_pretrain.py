@@ -16,7 +16,15 @@ from src.datasets import PretrainNpyDataset
 from src.model import GPT
 from src.tokenizer_utils import SentencePieceTokenizer
 from src.trainer import Trainer
-from src.utils import assert_exists, count_parameters, get_device, human_count, read_json, set_seed
+from src.utils import (
+    assert_exists,
+    count_parameters,
+    get_device,
+    human_count,
+    maybe_compile_model,
+    read_json,
+    set_seed,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,6 +99,12 @@ def main() -> None:
     )
 
     model = GPT(cfg.model)
+    model = maybe_compile_model(
+        model,
+        enabled=cfg.training.compile_model,
+        backend=cfg.training.compile_backend,
+        mode=cfg.training.compile_mode,
+    )
     print(f"[model] trainable parameters: {human_count(count_parameters(model))}")
 
     trainer = Trainer(

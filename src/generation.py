@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from typing import Iterator, List, Sequence, Tuple
 
 import torch
 
@@ -85,6 +85,28 @@ def sample_next_token(
     return torch.multinomial(probs, num_samples=1)
 
 
+def apply_repetition_penalty(
+    logits: torch.Tensor,
+    token_history: torch.Tensor,
+    repetition_penalty: float,
+) -> torch.Tensor:
+    if repetition_penalty <= 1.0:
+        return logits
+    if token_history.dim() != 2:
+        raise ValueError(f"token_history must have shape [batch, time], got {tuple(token_history.shape)}")
+
+    adjusted = logits.clone()
+    for batch_idx in range(token_history.size(0)):
+        token_ids = torch.unique(token_history[batch_idx])
+        selected = adjusted[batch_idx, token_ids]
+        adjusted[batch_idx, token_ids] = torch.where(
+            selected < 0,
+            selected * repetition_penalty,
+            selected / repetition_penalty,
+        )
+    return adjusted
+
+
 @torch.inference_mode()
 def generate(
     model: torch.nn.Module,
@@ -92,6 +114,7 @@ def generate(
     max_new_tokens: int,
     temperature: float = 1.0,
     top_k: int | None = None,
+    repetition_penalty: float = 1.0,
     stop_token_ids: Sequence[int] | None = None,
 ) -> torch.Tensor:
     if input_ids.dim() != 2:
@@ -107,6 +130,11 @@ def generate(
         idx_cond = out[:, -model.config.block_size :]
         logits, _ = model(idx_cond)
         next_token_logits = logits[:, -1, :]
+        next_token_logits = apply_repetition_penalty(
+            next_token_logits,
+            idx_cond,
+            repetition_penalty=repetition_penalty,
+        )
         next_token = sample_next_token(
             next_token_logits,
             temperature=temperature,
@@ -120,3 +148,46 @@ def generate(
                 break
 
     return out
+
+
+@torch.inference_mode()
+def generate_stream(
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    temperature: float = 1.0,
+    top_k: int | None = None,
+    repetition_penalty: float = 1.0,
+    stop_token_ids: Sequence[int] | None = None,
+) -> Iterator[torch.Tensor]:
+    if input_ids.dim() != 2:
+        raise ValueError(f"input_ids must have shape [batch, time], got {tuple(input_ids.shape)}")
+    if max_new_tokens <= 0:
+        raise ValueError("max_new_tokens must be > 0")
+
+    model.eval()
+    stop_set = set(stop_token_ids or [])
+
+    out = input_ids
+    for _ in range(max_new_tokens):
+        idx_cond = out[:, -model.config.block_size :]
+        logits, _ = model(idx_cond)
+        next_token_logits = logits[:, -1, :]
+        next_token_logits = apply_repetition_penalty(
+            next_token_logits,
+            idx_cond,
+            repetition_penalty=repetition_penalty,
+        )
+        next_token = sample_next_token(
+            next_token_logits,
+            temperature=temperature,
+            top_k=top_k,
+        )
+
+        if stop_set:
+            done = [int(token.item()) in stop_set for token in next_token]
+            if all(done):
+                break
+
+        out = torch.cat([out, next_token], dim=1)
+        yield next_token

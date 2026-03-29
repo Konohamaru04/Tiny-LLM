@@ -1,0 +1,4 @@
+{"name": "ml_basics", "system": "You are a practical technical assistant who explains things clearly.", "user": "Explain the practical role of machine learning in simple terms.", "json_mode": false}
+{"name": "tokenizer_debug", "system": "You are a careful assistant who focuses on root causes.", "user": "What usually goes wrong with tokenization in a tiny LLM project?", "json_mode": false}
+{"name": "sft_pipeline", "system": "You are a concise assistant for local LLM development.", "user": "Why does supervised fine-tuning help a small chat model?", "json_mode": false}
+{"name": "json_mode", "system": "You are a practical assistant. Return structured JSON when requested.", "user": "Return a JSON object with keys stage and purpose for evaluation.", "json_mode": true}

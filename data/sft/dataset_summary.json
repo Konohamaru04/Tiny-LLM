@@ -1,0 +1,75 @@
+{
+  "raw_markdown_documents": 180,
+  "train": {
+    "records": 1080,
+    "categories": {
+      "code_generation": 180,
+      "conversation": 180,
+      "question_answering": 180,
+      "reasoning": 180,
+      "summarization": 180,
+      "transformation": 180
+    },
+    "difficulties": {
+      "easy": 360,
+      "hard": 360,
+      "medium": 360
+    },
+    "category_difficulty": {
+      "code_generation::easy": 60,
+      "code_generation::hard": 60,
+      "code_generation::medium": 60,
+      "conversation::easy": 60,
+      "conversation::hard": 60,
+      "conversation::medium": 60,
+      "question_answering::easy": 60,
+      "question_answering::hard": 60,
+      "question_answering::medium": 60,
+      "reasoning::easy": 60,
+      "reasoning::hard": 60,
+      "reasoning::medium": 60,
+      "summarization::easy": 60,
+      "summarization::hard": 60,
+      "summarization::medium": 60,
+      "transformation::easy": 60,
+      "transformation::hard": 60,
+      "transformation::medium": 60
+    }
+  },
+  "val": {
+    "records": 180,
+    "categories": {
+      "code_generation": 30,
+      "conversation": 30,
+      "question_answering": 30,
+      "reasoning": 30,
+      "summarization": 30,
+      "transformation": 30
+    },
+    "difficulties": {
+      "easy": 60,
+      "hard": 60,
+      "medium": 60
+    },
+    "category_difficulty": {
+      "code_generation::easy": 10,
+      "code_generation::hard": 10,
+      "code_generation::medium": 10,
+      "conversation::easy": 10,
+      "conversation::hard": 10,
+      "conversation::medium": 10,
+      "question_answering::easy": 10,
+      "question_answering::hard": 10,
+      "question_answering::medium": 10,
+      "reasoning::easy": 10,
+      "reasoning::hard": 10,
+      "reasoning::medium": 10,
+      "summarization::easy": 10,
+      "summarization::hard": 10,
+      "summarization::medium": 10,
+      "transformation::easy": 10,
+      "transformation::hard": 10,
+      "transformation::medium": 10
+    }
+  }
+}

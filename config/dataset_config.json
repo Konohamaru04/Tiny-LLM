@@ -1,0 +1,44 @@
+{
+  "output_path": "sample_train.jsonl",
+  "failure_log_path": "logs/dataset_generation_failures.jsonl",
+  "stats_output_path": "logs/dataset_stats.json",
+  "deduped_output_path": "sample_train.deduped.jsonl",
+  "api_base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+  "model": "glm-4.7-flash",
+  "batch_size": 10,
+  "target_records": 50,
+  "temperature": 0.7,
+  "max_tokens": 4096,
+  "timeout_seconds": 60,
+  "max_retries": 3,
+  "rewrite_output_with_clean_records": true,
+  "categories": [
+    "machine_learning",
+    "deep_learning",
+    "transformers",
+    "tokenization",
+    "pytorch",
+    "optimization",
+    "evaluation",
+    "data_quality",
+    "local_inference",
+    "instruction_tuning"
+  ],
+  "difficulties": [
+    "beginner",
+    "intermediate",
+    "advanced"
+  ],
+  "tag_pool": [
+    "llm",
+    "pytorch",
+    "training",
+    "sft",
+    "tokenizer",
+    "evaluation",
+    "dataset",
+    "inference",
+    "transformers",
+    "debugging"
+  ]
+}
