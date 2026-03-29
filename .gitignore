@@ -45,3 +45,4 @@ Thumbs.db
 logs/
 sample_train.deduped.jsonl
 eval_reports/
+.claude
