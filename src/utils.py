@@ -61,7 +61,7 @@ def save_torch_checkpoint(state: dict[str, Any], path: str | Path) -> Path:
 def load_torch_checkpoint(path: str | Path, map_location: str | torch.device = "cpu") -> dict[str, Any]:
     p = assert_exists(path, "Checkpoint")
     try:
-        return torch.load(p, map_location=map_location)
+        return torch.load(p, map_location=map_location, weights_only=True)
     except Exception as exc:  # pragma: no cover
         raise RuntimeError(f"Failed to load checkpoint from {p}: {exc}") from exc
 

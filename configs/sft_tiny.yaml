@@ -1,11 +1,11 @@
 model:
   vocab_size: 2865
-  block_size: 96
+  block_size: 1024
   n_layer: 8
   n_head: 6
   n_embd: 384
   mlp_ratio: 4
-  dropout: 0.10
+  dropout: 0.05
   tie_weights: true
 
 data:
@@ -17,19 +17,19 @@ training:
   output_dir: checkpoints/sft_tiny
   pretrained_checkpoint: checkpoints/pretrain_tiny/best.pt
   seed: 0
-  batch_size: 4
-  gradient_accumulation_steps: 8
+  batch_size: 1
+  gradient_accumulation_steps: 16
   learning_rate: 1.0e-4
   min_lr: 1.0e-5
-  warmup_steps: 20
-  max_steps: 6000
+  warmup_steps: 200
+  max_steps: 12000
   num_workers: 0
   weight_decay: 0.05
   grad_clip: 1.0
-  eval_interval: 500
-  eval_steps: 200
-  save_interval: 500
-  log_interval: 100
+  eval_interval: 600
+  eval_steps: 100
+  save_interval: 1000
+  log_interval: 10
   patience: 10
   use_amp: true
   resume_from: ""
