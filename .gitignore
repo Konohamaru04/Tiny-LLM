@@ -22,6 +22,7 @@ dist/
 # Local training artifacts
 data/raw/*
 !data/raw/.gitkeep
+data/raw/sft
 
 data/processed/*
 !data/processed/.gitkeep
