@@ -18,6 +18,11 @@ dist/
 # IDE / editor
 .vscode/
 .idea/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 # Local training artifacts
 data/raw/*
@@ -27,9 +32,16 @@ data/raw/sft
 data/processed/*
 !data/processed/.gitkeep
 
+data/sft/*.jsonl
+data/sft/dataset_summary.json
+
 checkpoints/*
 !checkpoints/.gitkeep
 
 # Misc
 .DS_Store
 Thumbs.db
+.env
+logs/
+sample_train.deduped.jsonl
+eval_reports/

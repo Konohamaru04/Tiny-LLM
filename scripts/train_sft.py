@@ -21,7 +21,9 @@ from src.utils import (
     get_device,
     human_count,
     load_torch_checkpoint,
+    maybe_compile_model,
     set_seed,
+    verify_checkpoint_fingerprints,
 )
 
 
@@ -110,9 +112,21 @@ def main() -> None:
                 f"Checkpoint cfg:  {loaded_cfg}"
             )
 
+        verify_checkpoint_fingerprints(
+            pretrained_state,
+            model_config=cfg.model,
+            tokenizer_model_path=cfg.data.tokenizer_model_path,
+            context="pretrained checkpoint",
+        )
         model.load_state_dict(pretrained_state["model_state"])
         print(f"[init] loaded pretrained weights from: {pretrained_ckpt_path}")
 
+    model = maybe_compile_model(
+        model,
+        enabled=cfg.training.compile_model,
+        backend=cfg.training.compile_backend,
+        mode=cfg.training.compile_mode,
+    )
     print(f"[model] trainable parameters: {human_count(count_parameters(model))}")
 
     trainer = Trainer(

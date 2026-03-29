@@ -1,9 +1,14 @@
 checkpoint_path: checkpoints/sft_tiny/best.pt
 tokenizer_model_path: data/processed/tokenizer.model
 system_prompt: You are a practical technical assistant who explains things clearly.
+personas_path: configs/personas.json
+default_persona: technical
+session_file: logs/chat_session.json
 max_history_turns: 8
 temperature: 0.4
 top_k: 80
 max_new_tokens: 1024
+repetition_penalty: 1.05
+stream: true
 json_mode: false
 device: auto

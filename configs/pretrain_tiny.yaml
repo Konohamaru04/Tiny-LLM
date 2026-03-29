@@ -7,6 +7,12 @@ model:
   mlp_ratio: 4
   dropout: 0.05
   tie_weights: true
+  norm_type: layernorm
+  mlp_type: gelu
+  positional_embedding: learned
+  rope_theta: 10000.0
+  attention_impl: auto
+  gradient_checkpointing: false
 
 data:
   tokenizer_model_path: data/processed/tokenizer.model
@@ -28,10 +34,24 @@ training:
   num_workers: 0
   weight_decay: 0.10
   grad_clip: 1.0
-  eval_interval: 2000
+  eval_interval: 200
   eval_steps: 50
   save_interval: 200
   log_interval: 10
   patience: 10
   use_amp: true
   resume_from: ""
+  metrics_jsonl_path: checkpoints/pretrain_tiny/metrics.jsonl
+  metrics_csv_path: checkpoints/pretrain_tiny/metrics.csv
+  sample_prompts_path: configs/eval_prompts.jsonl
+  sample_output_dir: checkpoints/pretrain_tiny/sample_generations
+  sample_system_prompt: You are a practical technical assistant who explains things clearly.
+  sample_max_history_turns: 0
+  sample_temperature: 0.4
+  sample_top_k: 80
+  sample_max_new_tokens: 160
+  sample_repetition_penalty: 1.05
+  sample_json_mode: false
+  compile_model: false
+  compile_backend: ""
+  compile_mode: ""

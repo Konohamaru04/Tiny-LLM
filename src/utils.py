@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -127,3 +129,72 @@ def human_count(value: int) -> str:
             return f"{v:.2f}{unit}"
         v /= 1000.0
     return f"{v:.2f}T"
+
+
+def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    if hasattr(model, "_orig_mod"):
+        return model._orig_mod  # type: ignore[attr-defined]
+    return model
+
+
+def sha256_file(path: str | Path) -> str:
+    p = assert_exists(path, "File")
+    digest = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stable_json_hash(data: Any) -> str:
+    if is_dataclass(data):
+        data = asdict(data)
+    payload = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def verify_checkpoint_fingerprints(
+    state: dict[str, Any],
+    model_config: Any | None = None,
+    tokenizer_model_path: str | Path | None = None,
+    context: str = "checkpoint",
+) -> None:
+    checkpoint_config_hash = state.get("model_config_hash")
+    if checkpoint_config_hash and model_config is not None:
+        expected = stable_json_hash(model_config)
+        if checkpoint_config_hash != expected:
+            raise ValueError(
+                f"{context} model_config hash does not match the current runtime config.\n"
+                f"checkpoint={checkpoint_config_hash}\n"
+                f"runtime={expected}"
+            )
+
+    checkpoint_tokenizer_hash = state.get("tokenizer_sha256")
+    if checkpoint_tokenizer_hash and tokenizer_model_path:
+        runtime_tokenizer_hash = sha256_file(tokenizer_model_path)
+        if checkpoint_tokenizer_hash != runtime_tokenizer_hash:
+            raise ValueError(
+                f"{context} tokenizer hash does not match the current tokenizer file.\n"
+                f"checkpoint={checkpoint_tokenizer_hash}\n"
+                f"runtime={runtime_tokenizer_hash}\n"
+                f"tokenizer={resolve_path(tokenizer_model_path)}"
+            )
+
+
+def maybe_compile_model(
+    model: torch.nn.Module,
+    enabled: bool = False,
+    backend: str = "",
+    mode: str = "",
+) -> torch.nn.Module:
+    if not enabled:
+        return model
+    if not hasattr(torch, "compile"):
+        raise RuntimeError("torch.compile was requested, but this PyTorch build does not expose torch.compile.")
+
+    kwargs: dict[str, Any] = {}
+    if backend:
+        kwargs["backend"] = backend
+    if mode:
+        kwargs["mode"] = mode
+    return torch.compile(model, **kwargs)

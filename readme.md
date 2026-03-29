@@ -47,7 +47,8 @@ This repository implements a tiny decoder-only language model that can be traine
 * Decoder-only causal Transformer
 * Supervised fine-tuning for chat formatting
 * Optional JSON-style response patterning
-* Minimal terminal chat interface
+* Streaming terminal chat interface with sessions and personas
+* Lightweight local web chat UI
 * CPU fallback support
 * Windows and Linux friendly paths and scripts
 
@@ -81,6 +82,7 @@ Minimum usable setup:
 * numpy
 * PyYAML
 * tqdm
+* aiofiles
 
 ## Repository structure
 
@@ -88,16 +90,24 @@ Minimum usable setup:
 Tiny-LLM/
 ├── README.md
 ├── requirements.txt
+├── pyproject.toml
 ├── configs/
 │   ├── tokenizer.yaml
 │   ├── pretrain_tiny.yaml
 │   ├── sft_tiny.yaml
-│   └── chat.yaml
+│   ├── chat.yaml
+│   ├── eval_prompts.jsonl
+│   └── personas.json
 ├── data/
 │   ├── raw/
 │   ├── processed/
 │   └── sft/
 ├── checkpoints/
+├── docs/
+│   ├── development.md
+│   ├── evaluation.md
+│   ├── chat_experience.md
+│   └── model_upgrades.md
 ├── src/
 │   ├── __init__.py
 │   ├── config.py
@@ -105,15 +115,25 @@ Tiny-LLM/
 │   ├── tokenizer_utils.py
 │   ├── data_utils.py
 │   ├── datasets.py
+│   ├── dataset_generation.py
 │   ├── model.py
 │   ├── trainer.py
-│   └── generation.py
+│   ├── generation.py
+│   ├── evaluation.py
+│   └── chat_runtime.py
 └── scripts/
+    ├── regenerate_datasets.py
     ├── train_tokenizer.py
     ├── prepare_data.py
     ├── train_pretrain.py
     ├── train_sft.py
-    └── chat.py
+    ├── eval_checkpoint.py
+    ├── generate_sample_train.py
+    ├── validate_jsonl.py
+    ├── deduplicate_jsonl.py
+    ├── dataset_stats.py
+    ├── chat.py
+    └── web_chat.py
 ```
 
 ## Environment setup guide
@@ -189,17 +209,23 @@ This project follows a clear pipeline. Each stage has a practical role.
 You can either manually place Markdown files inside `data/raw/` **or generate a starter dataset automatically** using the helper script:
 
 ```bash
-python generate_natural_dataset.py
+python scripts/regenerate_datasets.py
 ```
 
-This script generates natural-language Markdown documents designed for educational training runs and testing the full pipeline. It produces readable explanations, small tutorials, and conceptual write‑ups that are useful for tiny‑model pretraining.
+This script generates natural-language Markdown documents and SFT JSONL files in one shot, designed for educational training runs and testing the full pipeline.
 
 Typical output:
 
 ```
-data/raw/generated_doc_001.md
-...
-data/raw/generated_doc_1000.md
+data/raw/001_support_triage.md  ...  data/raw/180_*.md
+data/sft/sample_train.jsonl
+data/sft/sample_val.jsonl
+```
+
+Custom counts:
+
+```bash
+python scripts/regenerate_datasets.py --raw-count 180 --train-count 1080 --val-count 180 --seed 42
 ```
 
 This makes it easy for students to bootstrap a dataset without collecting large external corpora.
@@ -429,11 +455,34 @@ The chat script:
 
 #### Features
 
-* short conversation history
+* streaming terminal output by default
+* persistent chat sessions via `session_file`
+* persona presets from `configs/personas.json`
 * optional JSON mode
 * temperature sampling
 * top-k sampling
+* repetition penalty
 * max token control
+
+#### Helpful CLI options
+
+```bash
+python scripts/chat.py --list-personas
+python scripts/chat.py --persona coach
+python scripts/chat.py --session-file logs/my_chat.json
+python scripts/chat.py --json-mode
+python scripts/chat.py --no-stream
+```
+
+#### Browser UI
+
+You can also launch a minimal local browser interface:
+
+```bash
+python scripts/web_chat.py --config configs/chat.yaml
+```
+
+This serves a small web app on `http://127.0.0.1:8000` by default, with persona switching, editable system prompts, JSON mode toggling, and the same session file format used by the CLI.
 
 #### Common question
 
@@ -452,12 +501,17 @@ This usually means one or more of the following:
 For a full end-to-end run:
 
 ```bash
+python scripts/regenerate_datasets.py
 python scripts/train_tokenizer.py --config configs/tokenizer.yaml
 python scripts/prepare_data.py --config configs/pretrain_tiny.yaml
 python scripts/train_pretrain.py --config configs/pretrain_tiny.yaml
 python scripts/train_sft.py --config configs/sft_tiny.yaml
+python scripts/eval_checkpoint.py --chat-config configs/chat.yaml --sft-config configs/sft_tiny.yaml
 python scripts/chat.py --config configs/chat.yaml
+python scripts/web_chat.py --config configs/chat.yaml
 ```
+
+See [ExecSeq.md](ExecSeq.md) for the full reference with resume, evaluation, and dataset utility commands.
 
 ## Practical learning notes for students
 
