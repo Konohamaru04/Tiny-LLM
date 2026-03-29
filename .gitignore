@@ -32,6 +32,9 @@ data/raw/sft
 data/processed/*
 !data/processed/.gitkeep
 
+data/sft/*.jsonl
+data/sft/dataset_summary.json
+
 checkpoints/*
 !checkpoints/.gitkeep
 
