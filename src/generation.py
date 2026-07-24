@@ -35,37 +35,60 @@ def build_chat_prompt_tokens(
     system_prompt = _normalize_chat_text(system_prompt)
     turns = list(history[-max_history_turns:] if max_history_turns > 0 else [])
 
+    bos = [tokenizer.bos_id]
+    system_tokens = (
+        _encode_role_segment(tokenizer, "<|system|>", system_prompt)
+        if system_prompt
+        else []
+    )
     assistant_prefix = tokenizer.encode("<|assistant|>\n", add_bos=False, add_eos=False)
     capability_prefix = tokenizer.encode(
         build_capability_prefix(thinking_mode=thinking_mode, tools=tools),
         add_bos=False,
         add_eos=False,
     )
-    json_prefix = tokenizer.encode("<|json|>\n", add_bos=False, add_eos=False) if json_mode else []
+    json_prefix = (
+        tokenizer.encode("<|json|>\n", add_bos=False, add_eos=False)
+        if json_mode
+        else []
+    )
+    response_prefix = assistant_prefix + capability_prefix + json_prefix
 
-    def compose(selected_turns: Sequence[Tuple[str, str]]) -> List[int]:
-        tokens = [tokenizer.bos_id]
-        if system_prompt:
-            tokens.extend(_encode_role_segment(tokenizer, "<|system|>", system_prompt))
-        for user_text, assistant_text in selected_turns:
-            tokens.extend(_encode_role_segment(tokenizer, "<|user|>", user_text))
-            tokens.extend(_encode_role_segment(tokenizer, "<|assistant|>", assistant_text))
-        tokens.extend(_encode_role_segment(tokenizer, "<|user|>", user_message))
-        tokens.extend(assistant_prefix)
-        tokens.extend(capability_prefix)
-        tokens.extend(json_prefix)
+    history_segments = [
+        _encode_role_segment(tokenizer, "<|user|>", user_text)
+        + _encode_role_segment(tokenizer, "<|assistant|>", assistant_text)
+        for user_text, assistant_text in turns
+    ]
+    user_header = tokenizer.encode("<|user|>\n", add_bos=False, add_eos=False)
+    user_body = tokenizer.encode(f"{user_message}\n", add_bos=False, add_eos=False)
+
+    def compose(selected_history: Sequence[List[int]], selected_user_body: Sequence[int]) -> List[int]:
+        tokens = bos + system_tokens
+        for segment in selected_history:
+            tokens.extend(segment)
+        tokens.extend(user_header)
+        tokens.extend(selected_user_body)
+        tokens.extend(response_prefix)
         return tokens
 
-    prompt_tokens = compose(turns)
-    while len(prompt_tokens) > block_size - 1 and turns:
-        turns = turns[1:]
-        prompt_tokens = compose(turns)
+    prompt_tokens = compose(history_segments, user_body)
+    while len(prompt_tokens) > block_size - 1 and history_segments:
+        history_segments = history_segments[1:]
+        prompt_tokens = compose(history_segments, user_body)
 
     if len(prompt_tokens) > block_size - 1:
-        tail = prompt_tokens[-(block_size - 1) :]
-        if tail[0] != tokenizer.bos_id:
-            tail = [tokenizer.bos_id] + tail[-(block_size - 2) :]
-        prompt_tokens = tail
+        fixed_tokens = bos + system_tokens + user_header + response_prefix
+        available_user_tokens = (block_size - 1) - len(fixed_tokens)
+        if available_user_tokens < 0:
+            raise ValueError(
+                "System prompt, role tokens, capability mode, and tool schemas exceed "
+                "the model context window. Reduce the system prompt or tool definitions."
+            )
+        user_tail = user_body[-available_user_tokens:] if available_user_tokens else []
+        prompt_tokens = compose([], user_tail)
+
+    if len(prompt_tokens) > block_size - 1:
+        raise RuntimeError("Prompt compaction failed to fit the configured context window")
     return prompt_tokens
 
 
