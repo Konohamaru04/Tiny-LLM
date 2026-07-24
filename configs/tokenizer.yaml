@@ -7,7 +7,7 @@ train_corpus_path: data/processed/train_corpus.txt
 val_corpus_path: data/processed/val_corpus.txt
 tokenizer_prefix: data/processed/tokenizer
 
-vocab_size: 2865
+vocab_size: 4096
 model_type: bpe
 character_coverage: 1.0
 seed: 0
@@ -19,9 +19,22 @@ bos_id: 1
 eos_id: 2
 pad_id: 3
 
+# These control tokens let one checkpoint learn normal chat, hidden reasoning,
+# auto-routing, and structured tool use. Retrain the tokenizer after this change.
 user_defined_symbols:
   - <|system|>
   - <|user|>
   - <|assistant|>
   - <|json|>
   - </json>
+  - <|think|>
+  - <|end_think|>
+  - <|no_think|>
+  - <|auto_think|>
+  - <|tools|>
+  - <|end_tools|>
+  - <|tool_call|>
+  - <|end_tool_call|>
+  - <|tool_result|>
+  - <|end_tool_result|>
+  - <|final|>
