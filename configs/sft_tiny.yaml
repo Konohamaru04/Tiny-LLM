@@ -13,6 +13,11 @@ model:
   rope_theta: 1000000.0
   attention_impl: sdpa
   gradient_checkpointing: true
+  moe_num_experts: 4
+  moe_top_k: 2
+  moe_every_n_layers: 1
+  moe_aux_loss_coef: 0.01
+  moe_router_jitter: 0.01
 
 data:
   tokenizer_model_path: data/processed/tokenizer.model
@@ -20,7 +25,6 @@ data:
   val_jsonl_path: data/sft/unified_val.jsonl
 
 training:
-  # This stage writes the final single checkpoint used by all modes.
   output_dir: checkpoints/unified_moe_sft
   pretrained_checkpoint: checkpoints/unified_moe/best.pt
   seed: 0
