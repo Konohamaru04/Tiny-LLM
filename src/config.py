@@ -35,6 +35,17 @@ class TokenizerConfig:
             "<|assistant|>",
             "<|json|>",
             "</json>",
+            "<|think|>",
+            "<|end_think|>",
+            "<|no_think|>",
+            "<|auto_think|>",
+            "<|tools|>",
+            "<|end_tools|>",
+            "<|tool_call|>",
+            "<|end_tool_call|>",
+            "<|tool_result|>",
+            "<|end_tool_result|>",
+            "<|final|>",
         ]
     )
 
@@ -67,6 +78,11 @@ class ModelConfig:
     rope_theta: float = 10000.0
     attention_impl: str = "auto"
     gradient_checkpointing: bool = False
+    moe_num_experts: int = 1
+    moe_top_k: int = 1
+    moe_every_n_layers: int = 1
+    moe_aux_loss_coef: float = 0.01
+    moe_router_jitter: float = 0.0
 
 
 @dataclass
@@ -240,6 +256,18 @@ def _validate_model_config(cfg: ModelConfig) -> None:
         raise ValueError("model.attention_impl must be 'auto', 'manual', or 'sdpa'")
     if cfg.positional_embedding == "rope" and (cfg.n_embd // cfg.n_head) % 2 != 0:
         raise ValueError("RoPE requires head_dim to be even.")
+    if cfg.moe_num_experts <= 0:
+        raise ValueError("model.moe_num_experts must be > 0")
+    if cfg.moe_top_k <= 0:
+        raise ValueError("model.moe_top_k must be > 0")
+    if cfg.moe_top_k > cfg.moe_num_experts:
+        raise ValueError("model.moe_top_k must be <= model.moe_num_experts")
+    if cfg.moe_every_n_layers <= 0:
+        raise ValueError("model.moe_every_n_layers must be > 0")
+    if cfg.moe_aux_loss_coef < 0.0:
+        raise ValueError("model.moe_aux_loss_coef must be >= 0")
+    if cfg.moe_router_jitter < 0.0:
+        raise ValueError("model.moe_router_jitter must be >= 0")
 
 
 def _validate_train_config(cfg: TrainConfig | SFTTrainConfig) -> None:
