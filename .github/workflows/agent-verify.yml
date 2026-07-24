@@ -60,8 +60,6 @@ jobs:
         run: python scripts/prepare_public_datasets.py --help
 
       - name: Core pipeline tests
-        id: core_tests
-        continue-on-error: true
         run: |
           python -m pytest -q \
             tests/test_config.py \
@@ -72,18 +70,12 @@ jobs:
             tests/test_chat_runtime.py
 
       - name: Tokenizer and generation tests
-        id: generation_tests
-        continue-on-error: true
         run: python -m pytest -q tests/test_model_and_generation.py
 
       - name: SFT dataset tests
-        id: sft_tests
-        continue-on-error: true
         run: python -m pytest -q tests/test_sft_dataset.py
 
       - name: Capability and agent tests
-        id: agent_tests
-        continue-on-error: true
         run: |
           python -m pytest -q \
             tests/test_capabilities.py \
@@ -91,13 +83,9 @@ jobs:
             tests/test_agent_runtime.py
 
       - name: MoE tests
-        id: moe_tests
-        continue-on-error: true
         run: python -m pytest -q tests/test_moe.py
 
       - name: MoE forward and backward smoke test
-        id: moe_smoke
-        continue-on-error: true
         run: |
           python - <<'PY'
           import torch
@@ -143,13 +131,3 @@ jobs:
               "parameters": sum(parameter.numel() for parameter in model.parameters()),
           })
           PY
-
-      - name: Fail on any verification error
-        if: always()
-        run: |
-          test "${{ steps.core_tests.outcome }}" = "success"
-          test "${{ steps.generation_tests.outcome }}" = "success"
-          test "${{ steps.sft_tests.outcome }}" = "success"
-          test "${{ steps.agent_tests.outcome }}" = "success"
-          test "${{ steps.moe_tests.outcome }}" = "success"
-          test "${{ steps.moe_smoke.outcome }}" = "success"
