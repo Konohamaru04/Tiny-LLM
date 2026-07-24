@@ -29,7 +29,7 @@ class TrainerTests(unittest.TestCase):
 
             model_cfg = ModelConfig(
                 vocab_size=tokenizer.vocab_size,
-                block_size=8,
+                block_size=128,
                 n_layer=1,
                 n_head=2,
                 n_embd=16,
