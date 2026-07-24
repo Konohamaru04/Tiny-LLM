@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.config import ModelConfig, load_sft_config
-from src.datasets import SFTJsonlDataset
+from src.datasets import SFTBatchCollator, SFTJsonlDataset
 from src.model import GPT
 from src.tokenizer_utils import SentencePieceTokenizer
 from src.trainer import Trainer
@@ -28,7 +28,7 @@ from src.utils import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run lightweight chat SFT.")
+    parser = argparse.ArgumentParser(description="Run unified capability SFT.")
     parser.add_argument(
         "--config",
         type=str,
@@ -74,6 +74,7 @@ def main() -> None:
 
     device = get_device("auto")
     pin_memory = device.type == "cuda"
+    collator = SFTBatchCollator(tokenizer.pad_id)
 
     train_loader = DataLoader(
         train_dataset,
@@ -82,6 +83,7 @@ def main() -> None:
         num_workers=cfg.training.num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        collate_fn=collator,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -90,6 +92,7 @@ def main() -> None:
         num_workers=cfg.training.num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        collate_fn=collator,
     )
 
     model = GPT(cfg.model)
@@ -97,12 +100,17 @@ def main() -> None:
     if resume_path:
         print(f"[resume] will resume SFT from checkpoint: {resume_path}")
     else:
-        pretrained_ckpt_path = assert_exists(cfg.training.pretrained_checkpoint, "Pretrained checkpoint")
+        pretrained_ckpt_path = assert_exists(
+            cfg.training.pretrained_checkpoint,
+            "Pretrained checkpoint",
+        )
         pretrained_state = load_torch_checkpoint(pretrained_ckpt_path, map_location="cpu")
 
         ckpt_model_cfg = pretrained_state.get("model_config")
         if ckpt_model_cfg is None:
-            raise ValueError(f"Pretrained checkpoint missing model_config: {pretrained_ckpt_path}")
+            raise ValueError(
+                f"Pretrained checkpoint missing model_config: {pretrained_ckpt_path}"
+            )
 
         loaded_cfg = ModelConfig(**ckpt_model_cfg)
         if loaded_cfg != cfg.model:
