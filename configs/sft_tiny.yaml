@@ -1,6 +1,6 @@
 model:
   vocab_size: 4096
-  block_size: 4096
+  block_size: 16384
   n_layer: 8
   n_head: 6
   n_embd: 384
@@ -26,7 +26,7 @@ data:
 
 training:
   output_dir: checkpoints/unified_moe_sft
-  pretrained_checkpoint: checkpoints/unified_moe/best.pt
+  pretrained_checkpoint: checkpoints/unified_moe_16k/best.pt
   seed: 0
   batch_size: 1
   gradient_accumulation_steps: 32
