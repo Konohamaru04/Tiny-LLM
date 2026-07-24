@@ -66,7 +66,7 @@ class ConfigLoadingTests(unittest.TestCase):
             cfg_path.write_text(
                 textwrap.dedent(
                     """
-                    checkpoint_path: checkpoints/sft_tiny/best.pt
+                    checkpoint_path: checkpoints/sft_tiny/best.safetensors
                     tokenizer_model_path: data/processed/tokenizer.model
                     max_history_turns: 2
                     temperature: -0.1
@@ -105,4 +105,33 @@ class ConfigLoadingTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(ValueError, "n_kv_head"):
+                load_pretrain_config(cfg_path)
+
+    def test_pretrain_config_rejects_top_k_above_expert_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "pretrain.yaml"
+            cfg_path.write_text(
+                textwrap.dedent(
+                    """
+                    model:
+                      vocab_size: 64
+                      block_size: 32
+                      n_layer: 2
+                      n_head: 2
+                      n_kv_head: 1
+                      n_embd: 32
+                      moe_num_experts: 4
+                      moe_top_k: 5
+                    training:
+                      max_steps: 1
+                      eval_interval: 1
+                      eval_steps: 1
+                      save_interval: 1
+                      log_interval: 1
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "moe_top_k"):
                 load_pretrain_config(cfg_path)

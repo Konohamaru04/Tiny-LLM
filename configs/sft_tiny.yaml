@@ -20,6 +20,13 @@ model:
   residual_scale_init: true
   attention_impl: auto
   gradient_checkpointing: true
+  moe_num_experts: 4
+  moe_top_k: 2
+  moe_every_n_layers: 1
+  moe_shared_expert: true
+  moe_load_balance_loss_coefficient: 1.0e-2
+  moe_router_z_loss_coefficient: 1.0e-3
+  moe_router_jitter: 0.0
 
 data:
   tokenizer_model_path: data/processed/tokenizer.model
@@ -27,8 +34,8 @@ data:
   val_jsonl_path: data/public_sft/validation.jsonl
 
 training:
-  output_dir: checkpoints/sft_modern
-  pretrained_checkpoint: checkpoints/pretrain_modern/best.pt
+  output_dir: checkpoints/sft_moe
+  pretrained_checkpoint: checkpoints/pretrain_moe/best.safetensors
   seed: 0
   batch_size: 1
   gradient_accumulation_steps: 16
@@ -46,10 +53,10 @@ training:
   patience: 10
   use_amp: true
   resume_from: ""
-  metrics_jsonl_path: checkpoints/sft_modern/metrics.jsonl
-  metrics_csv_path: checkpoints/sft_modern/metrics.csv
+  metrics_jsonl_path: checkpoints/sft_moe/metrics.jsonl
+  metrics_csv_path: checkpoints/sft_moe/metrics.csv
   sample_prompts_path: configs/eval_prompts.jsonl
-  sample_output_dir: checkpoints/sft_modern/sample_generations
+  sample_output_dir: checkpoints/sft_moe/sample_generations
   sample_system_prompt: You are a practical technical assistant who explains things clearly.
   sample_max_history_turns: 0
   sample_temperature: 0.4

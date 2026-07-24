@@ -40,6 +40,38 @@ class PretrainNpyDataset(Dataset):
         return x, y
 
 
+class SFTBatchCollator:
+    """Right-pad each SFT batch only to its longest sequence."""
+
+    def __init__(self, pad_id: int):
+        self.pad_id = int(pad_id)
+
+    def __call__(
+        self,
+        batch: List[Tuple[torch.Tensor, torch.Tensor]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not batch:
+            raise ValueError("Cannot collate an empty SFT batch.")
+        max_length = max(int(input_ids.numel()) for input_ids, _ in batch)
+        input_batch = torch.full(
+            (len(batch), max_length),
+            self.pad_id,
+            dtype=torch.long,
+        )
+        label_batch = torch.full(
+            (len(batch), max_length),
+            -100,
+            dtype=torch.long,
+        )
+        for row_index, (input_ids, labels) in enumerate(batch):
+            if input_ids.shape != labels.shape:
+                raise ValueError("SFT input and label shapes must match.")
+            length = int(input_ids.numel())
+            input_batch[row_index, :length] = input_ids
+            label_batch[row_index, :length] = labels
+        return input_batch, label_batch
+
+
 class SFTJsonlDataset(Dataset):
     def __init__(
         self,
@@ -144,11 +176,6 @@ class SFTJsonlDataset(Dataset):
             full_loss_mask = full_loss_mask[window_start:window_end]
             full_seq[0] = self.tokenizer.bos_id
             full_loss_mask[0] = False
-
-        if len(full_seq) < self.max_seq_len:
-            pad_len = self.max_seq_len - len(full_seq)
-            full_seq.extend([self.tokenizer.pad_id] * pad_len)
-            full_loss_mask.extend([False] * pad_len)
 
         if not any(full_loss_mask):
             raise ValueError(

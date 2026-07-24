@@ -179,7 +179,7 @@ def encode_conversation(
                         tokenizer,
                         tokens,
                         loss_mask,
-                        content + "\n",
+                        f"<|final|>\n{content}\n",
                         supervised=True,
                     )
 
@@ -235,6 +235,14 @@ def encode_conversation(
                 tokens,
                 loss_mask,
                 "<|think|>\n",
+                supervised=False,
+            )
+        else:
+            _append_segment(
+                tokenizer,
+                tokens,
+                loss_mask,
+                "<|final|>\n",
                 supervised=False,
             )
 

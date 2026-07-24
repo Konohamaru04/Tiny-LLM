@@ -52,6 +52,14 @@ class ParsedToolCall:
         }
 
 
+@dataclass(frozen=True)
+class ParsedAssistantResponse:
+    reasoning: str
+    final: str
+    tool_calls: tuple[ParsedToolCall, ...]
+    raw_text: str
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolDefinition] = {}
@@ -207,6 +215,7 @@ _THINK_PATTERN = re.compile(
     r"<\|think\|>\s*(.*?)\s*</\|think\|>",
     flags=re.DOTALL,
 )
+_FINAL_TOKEN = "<|final|>"
 
 
 def parse_tool_calls(text: str) -> list[ParsedToolCall]:
@@ -233,6 +242,46 @@ def parse_tool_calls(text: str) -> list[ParsedToolCall]:
 
 def strip_tool_call_blocks(text: str) -> str:
     return _TOOL_CALL_PATTERN.sub("", text).strip()
+
+
+def _remove_protocol_sections(text: str, start_token: str, end_token: str) -> str:
+    output = text
+    search_from = 0
+    while True:
+        start = output.find(start_token, search_from)
+        if start < 0:
+            return output
+        end = output.find(end_token, start + len(start_token))
+        if end < 0:
+            return output[:start]
+        output = output[:start] + output[end + len(end_token) :]
+        search_from = start
+
+
+def parse_assistant_response(text: str) -> ParsedAssistantResponse:
+    raw = text.strip()
+    reasoning_sections = [
+        match.group(1).strip()
+        for match in _THINK_PATTERN.finditer(raw)
+        if match.group(1).strip()
+    ]
+    visible = _remove_protocol_sections(raw, "<|think|>", "</|think|>")
+    calls = tuple(parse_tool_calls(visible))
+    visible = _remove_protocol_sections(
+        visible,
+        "<|tool_call|>",
+        "</|tool_call|>",
+    )
+    final_index = visible.rfind(_FINAL_TOKEN)
+    if final_index >= 0:
+        visible = visible[final_index + len(_FINAL_TOKEN) :]
+    visible = visible.replace("</|think|>", "").replace("</|tool_call|>", "").strip()
+    return ParsedAssistantResponse(
+        reasoning="\n\n".join(reasoning_sections),
+        final=visible,
+        tool_calls=calls,
+        raw_text=raw,
+    )
 
 
 def split_thinking_block(text: str) -> tuple[str, str]:

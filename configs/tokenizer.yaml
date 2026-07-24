@@ -38,3 +38,4 @@ user_defined_symbols:
   - </|tool_call|>
   - <|tool_response|>
   - </|tool_response|>
+  - <|final|>

@@ -46,6 +46,7 @@ class TokenizerConfig:
             "</|tool_call|>",
             "<|tool_response|>",
             "</|tool_response|>",
+            "<|final|>",
         ]
     )
 
@@ -85,6 +86,13 @@ class ModelConfig:
     residual_scale_init: bool = True
     attention_impl: str = "auto"
     gradient_checkpointing: bool = False
+    moe_num_experts: int = 4
+    moe_top_k: int = 2
+    moe_every_n_layers: int = 1
+    moe_shared_expert: bool = True
+    moe_load_balance_loss_coefficient: float = 1e-2
+    moe_router_z_loss_coefficient: float = 1e-3
+    moe_router_jitter: float = 0.01
 
 
 @dataclass
@@ -152,7 +160,7 @@ class SFTDataConfig:
 @dataclass
 class SFTTrainConfig:
     output_dir: str = "checkpoints/sft_tiny"
-    pretrained_checkpoint: str = "checkpoints/pretrain_tiny/best.pt"
+    pretrained_checkpoint: str = "checkpoints/pretrain_tiny/best.safetensors"
     seed: int = 42
     batch_size: int = 4
     gradient_accumulation_steps: int = 8
@@ -197,7 +205,7 @@ class SFTConfig:
 
 @dataclass
 class ChatConfig:
-    checkpoint_path: str = "checkpoints/sft_tiny/best.pt"
+    checkpoint_path: str = "checkpoints/sft_tiny/best.safetensors"
     tokenizer_model_path: str = "data/processed/tokenizer.model"
     system_prompt: str = "You are a concise and helpful assistant."
     personas_path: str = "configs/personas.json"
@@ -277,6 +285,24 @@ def _validate_model_config(cfg: ModelConfig) -> None:
         raise ValueError("model.attention_impl must be 'auto', 'manual', or 'sdpa'")
     if cfg.positional_embedding == "rope" and (cfg.n_embd // cfg.n_head) % 2 != 0:
         raise ValueError("RoPE requires head_dim to be even.")
+    if cfg.moe_num_experts < 2:
+        raise ValueError("model.moe_num_experts must be >= 2")
+    if cfg.moe_top_k <= 0 or cfg.moe_top_k > cfg.moe_num_experts:
+        raise ValueError(
+            "model.moe_top_k must be in [1, model.moe_num_experts]"
+        )
+    if cfg.moe_every_n_layers <= 0:
+        raise ValueError("model.moe_every_n_layers must be > 0")
+    if cfg.moe_load_balance_loss_coefficient < 0.0:
+        raise ValueError(
+            "model.moe_load_balance_loss_coefficient must be >= 0"
+        )
+    if cfg.moe_router_z_loss_coefficient < 0.0:
+        raise ValueError(
+            "model.moe_router_z_loss_coefficient must be >= 0"
+        )
+    if not (0.0 <= cfg.moe_router_jitter < 1.0):
+        raise ValueError("model.moe_router_jitter must be in [0, 1)")
 
 
 def _validate_train_config(cfg: TrainConfig | SFTTrainConfig) -> None:

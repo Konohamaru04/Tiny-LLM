@@ -59,3 +59,10 @@ class DataPipelineTests(unittest.TestCase):
             self.assertEqual(packed.shape[1], 17)
             self.assertEqual(meta["block_size"], 16)
             self.assertGreater(meta["num_sequences"], 0)
+
+    def test_tokenizer_rejects_unknown_control_token_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tokenizer = train_test_tokenizer(Path(tmp))
+
+            with self.assertRaisesRegex(ValueError, "not found"):
+                tokenizer.token_to_id("<|not_a_real_control_token|>")

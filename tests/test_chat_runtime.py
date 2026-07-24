@@ -46,7 +46,7 @@ class ChatRuntimeTests(unittest.TestCase):
                     '<|tool_call|>{"id":"math_1","name":"calculator",'
                     '"arguments":{"expression":"19 * 23"}}</|tool_call|>'
                 ),
-                "The exact result is 437.",
+                "<|final|>\nThe exact result is 437.",
             ]
         )
         message_snapshots: list[list[dict]] = []
@@ -79,6 +79,8 @@ class ChatRuntimeTests(unittest.TestCase):
             )
 
         self.assertEqual(result.response, "The exact result is 437.")
+        self.assertEqual(result.reasoning, "Use exact arithmetic.")
+        self.assertNotIn("Use exact arithmetic", result.response)
         self.assertEqual(result.tool_events[0].output["result"]["value"], 437)
         self.assertEqual(
             message_snapshots[1][-2]["reasoning_content"],
@@ -123,7 +125,7 @@ class ChatRuntimeTests(unittest.TestCase):
             end_json = tokenizer.token_to_id("</json>")
             model_cfg = ModelConfig(
                 vocab_size=tokenizer.vocab_size,
-                block_size=32,
+                block_size=128,
                 n_layer=1,
                 n_head=2,
                 n_embd=16,

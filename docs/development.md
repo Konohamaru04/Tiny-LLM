@@ -26,7 +26,8 @@ The tests cover:
 - tokenizer and data preparation helpers
 - SFT dataset masking
 - model forward and prompt building
-- checkpoint save/load with a tiny synthetic training run
+- resumable SafeTensors checkpoint save/load with a tiny synthetic training run
+- sparse MoE routing, router losses, and long-horizon task resume
 
 ## Canonical local workflow
 

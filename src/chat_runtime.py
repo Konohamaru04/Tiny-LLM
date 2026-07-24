@@ -21,9 +21,7 @@ from src.tokenizer_utils import SentencePieceTokenizer
 from src.tools import (
     ParsedToolCall,
     ToolRegistry,
-    parse_tool_calls,
-    split_thinking_block,
-    strip_tool_call_blocks,
+    parse_assistant_response,
 )
 from src.utils import (
     assert_exists,
@@ -56,6 +54,8 @@ class AgentTurnResult:
     response: str
     tool_events: list[ToolEvent] = field(default_factory=list)
     reached_tool_limit: bool = False
+    reasoning: str = ""
+    raw_response: str = ""
 
 
 def load_personas(path: str | Path) -> dict[str, Persona]:
@@ -221,7 +221,8 @@ def generate_chat_response(
         tools=tools,
         thinking_mode=thinking_mode,
     )
-    return _generate_from_prompt(
+    effective_callback = None if thinking_mode else on_text_chunk
+    raw_response = _generate_from_prompt(
         model=model,
         tokenizer=tokenizer,
         device=device,
@@ -232,8 +233,12 @@ def generate_chat_response(
         top_k=top_k,
         max_new_tokens=max_new_tokens,
         repetition_penalty=repetition_penalty,
-        on_text_chunk=on_text_chunk,
+        on_text_chunk=effective_callback,
     )
+    visible_response = parse_assistant_response(raw_response).final
+    if thinking_mode and on_text_chunk is not None and visible_response:
+        on_text_chunk(visible_response)
+    return visible_response
 
 
 def _generate_from_prompt(
@@ -252,7 +257,7 @@ def _generate_from_prompt(
 ) -> str:
     input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
     stop_ids = build_stop_ids(tokenizer, json_mode=json_mode)
-    response_prefix = "<|think|>\n" if thinking_mode else ""
+    response_prefix = "<|think|>\n" if thinking_mode else "<|final|>\n"
 
     if on_text_chunk is None:
         output_ids = generate(
@@ -269,9 +274,10 @@ def _generate_from_prompt(
         return (response_prefix + tokenizer.decode(generated_ids)).strip()
 
     generated_ids: list[int] = []
+    # The control prefix belongs in the model transcript, not in user-visible
+    # streaming output. `generate_chat_response` parses it from the returned
+    # raw response after generation.
     rendered_text = response_prefix
-    if response_prefix:
-        on_text_chunk(response_prefix)
     for next_token in generate_stream(
         model=model,
         input_ids=input_ids,
@@ -361,9 +367,11 @@ def run_agent_turn(
     schemas = registry.schemas()
     events: list[ToolEvent] = []
     response = ""
+    raw_response = ""
+    reasoning_parts: list[str] = []
 
     for tool_round in range(max_tool_rounds + 1):
-        response = generate_messages_response(
+        raw_response = generate_messages_response(
             model=model,
             tokenizer=tokenizer,
             model_cfg=model_cfg,
@@ -377,24 +385,34 @@ def run_agent_turn(
             max_new_tokens=max_new_tokens,
             repetition_penalty=repetition_penalty,
         )
-        calls = parse_tool_calls(response)
+        parsed = parse_assistant_response(raw_response)
+        response = parsed.final
+        calls = list(parsed.tool_calls)
+        if parsed.reasoning:
+            reasoning_parts.append(parsed.reasoning)
         if not calls:
-            return AgentTurnResult(response=response, tool_events=events)
+            return AgentTurnResult(
+                response=response,
+                tool_events=events,
+                reasoning="\n\n".join(reasoning_parts),
+                raw_response=raw_response,
+            )
         if tool_round >= max_tool_rounds:
             return AgentTurnResult(
                 response=response,
                 tool_events=events,
                 reached_tool_limit=True,
+                reasoning="\n\n".join(reasoning_parts),
+                raw_response=raw_response,
             )
 
-        reasoning, visible_content = split_thinking_block(strip_tool_call_blocks(response))
         assistant_message = {
             "role": "assistant",
-            "content": visible_content,
+            "content": parsed.final,
             "tool_calls": [call.as_message_call() for call in calls],
         }
-        if reasoning:
-            assistant_message["reasoning_content"] = reasoning
+        if parsed.reasoning:
+            assistant_message["reasoning_content"] = parsed.reasoning
         messages.append(assistant_message)
         for call in calls:
             output = registry.execute(call)
@@ -408,7 +426,13 @@ def run_agent_turn(
                 }
             )
 
-    return AgentTurnResult(response=response, tool_events=events, reached_tool_limit=True)
+    return AgentTurnResult(
+        response=response,
+        tool_events=events,
+        reached_tool_limit=True,
+        reasoning="\n\n".join(reasoning_parts),
+        raw_response=raw_response,
+    )
 
 
 def load_chat_runtime(

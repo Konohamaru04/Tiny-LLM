@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from src.config import ModelConfig
+from src.moe import SparseMoE
 
 
 class RMSNorm(nn.Module):
@@ -191,12 +192,39 @@ class MLP(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_index: int):
         super().__init__()
         self.ln_1 = build_norm(config)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = build_norm(config)
-        self.mlp = MLP(config)
+        use_moe = (layer_index + 1) % config.moe_every_n_layers == 0
+        if use_moe:
+            raw_hidden_dim = config.n_embd * config.mlp_ratio
+            hidden_dim = int(
+                config.mlp_multiple_of
+                * math.ceil(raw_hidden_dim / config.mlp_multiple_of)
+            )
+            self.mlp: nn.Module = SparseMoE(
+                dim=config.n_embd,
+                hidden_dim=hidden_dim,
+                num_experts=config.moe_num_experts,
+                top_k=config.moe_top_k,
+                dropout=config.dropout,
+                linear_bias=config.linear_bias,
+                router_jitter=config.moe_router_jitter,
+                shared_expert=config.moe_shared_expert,
+            )
+        else:
+            self.mlp = MLP(config)
+
+    @property
+    def router_losses(self) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if not isinstance(self.mlp, SparseMoE) or self.mlp.last_stats is None:
+            return None
+        return (
+            self.mlp.last_stats.load_balance_loss,
+            self.mlp.last_stats.router_z_loss,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_1(x))
@@ -213,10 +241,15 @@ class GPT(nn.Module):
         self.pos_emb = nn.Embedding(config.block_size, config.n_embd) if config.positional_embedding == "learned" else None
         self.drop = nn.Dropout(config.dropout)
 
-        self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)])
+        self.blocks = nn.ModuleList(
+            TransformerBlock(config, layer_index)
+            for layer_index in range(config.n_layer)
+        )
         self.ln_f = build_norm(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.gradient_checkpointing = bool(config.gradient_checkpointing)
+        self.last_router_load_balance_loss: torch.Tensor | None = None
+        self.last_router_z_loss: torch.Tensor | None = None
 
         if config.tie_weights:
             self.lm_head.weight = self.token_emb.weight
@@ -226,7 +259,25 @@ class GPT(nn.Module):
             residual_std = config.initializer_range / math.sqrt(2 * config.n_layer)
             for block in self.blocks:
                 nn.init.normal_(block.attn.out_proj.weight, mean=0.0, std=residual_std)
-                nn.init.normal_(block.mlp.proj.weight, mean=0.0, std=residual_std)
+                if isinstance(block.mlp, SparseMoE):
+                    for expert in block.mlp.experts:
+                        nn.init.normal_(
+                            expert.down.weight,
+                            mean=0.0,
+                            std=residual_std,
+                        )
+                    if block.mlp.shared_expert is not None:
+                        nn.init.normal_(
+                            block.mlp.shared_expert.down.weight,
+                            mean=0.0,
+                            std=residual_std,
+                        )
+                else:
+                    nn.init.normal_(
+                        block.mlp.proj.weight,
+                        mean=0.0,
+                        std=residual_std,
+                    )
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
@@ -279,5 +330,28 @@ class GPT(nn.Module):
                 targets.reshape(-1),
                 ignore_index=-100,
             )
+            router_losses = [
+                block.router_losses
+                for block in self.blocks
+                if block.router_losses is not None
+            ]
+            if router_losses:
+                load_balance_loss = torch.stack(
+                    [item[0] for item in router_losses]
+                ).mean()
+                router_z_loss = torch.stack(
+                    [item[1] for item in router_losses]
+                ).mean()
+                self.last_router_load_balance_loss = (
+                    load_balance_loss.detach()
+                )
+                self.last_router_z_loss = router_z_loss.detach()
+                loss = (
+                    loss
+                    + self.config.moe_load_balance_loss_coefficient
+                    * load_balance_loss
+                    + self.config.moe_router_z_loss_coefficient
+                    * router_z_loss
+                )
 
         return logits, loss

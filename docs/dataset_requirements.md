@@ -68,7 +68,9 @@ common chat-completion conventions:
 
 Supported roles are `system`, `developer`, `user`, `assistant`, and `tool`.
 Assistant messages may contain `reasoning_content`, `content`, and
-`tool_calls`. Tool messages should include `tool_call_id`.
+`tool_calls`. Tool messages should include `tool_call_id`. Serialization wraps
+assistant-visible content in `<|final|>`; this token is supervised separately
+from `<|think|>` reasoning and tool calls.
 
 The legacy `system` / `user` / `assistant` row format remains accepted for
 small custom datasets.
@@ -79,6 +81,8 @@ small custom datasets.
 - Deduplicate exact normalized examples.
 - Preserve tool schemas, call IDs, and matching tool responses.
 - Reject examples without an assistant training target.
+- Use dynamic per-batch padding; labels on padding and non-assistant context
+  must remain `-100`.
 - Keep private secrets and personally identifying information out of data.
 - Treat reasoning traces as training data, not guaranteed factual evidence.
 - Review each source's license, terms, and upstream model restrictions.

@@ -29,7 +29,7 @@ class TrainerTests(unittest.TestCase):
 
             model_cfg = ModelConfig(
                 vocab_size=tokenizer.vocab_size,
-                block_size=8,
+                block_size=128,
                 n_layer=1,
                 n_head=2,
                 n_embd=16,
@@ -78,7 +78,7 @@ class TrainerTests(unittest.TestCase):
 
             trainer.train()
 
-            latest_path = root / "checkpoints" / "latest.pt"
+            latest_path = root / "checkpoints" / "latest.safetensors"
             self.assertTrue(latest_path.exists())
             self.assertTrue((root / "checkpoints" / "metrics.jsonl").exists())
             self.assertTrue((root / "checkpoints" / "metrics.csv").exists())
@@ -144,7 +144,10 @@ class TrainerTests(unittest.TestCase):
                 device=torch.device("cpu"),
                 task_name="fingerprint-test",
             )
-            checkpoint_path = trainer.save_checkpoint(root / "checkpoints" / "manual.pt", "manual")
+            checkpoint_path = trainer.save_checkpoint(
+                root / "checkpoints" / "manual.safetensors",
+                "manual",
+            )
 
             mismatched = Trainer(
                 model=GPT(model_cfg),

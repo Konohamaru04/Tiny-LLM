@@ -11,7 +11,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.config import ModelConfig, load_sft_config
-from src.datasets import SFTJsonlDataset
+from src.checkpoint_compat import (
+    context_extension_differences,
+    is_weight_compatible,
+)
+from src.datasets import SFTBatchCollator, SFTJsonlDataset
 from src.model import GPT
 from src.tokenizer_utils import SentencePieceTokenizer
 from src.trainer import Trainer
@@ -74,6 +78,7 @@ def main() -> None:
 
     device = get_device("auto")
     pin_memory = device.type == "cuda"
+    collator = SFTBatchCollator(tokenizer.pad_id)
 
     train_loader = DataLoader(
         train_dataset,
@@ -82,6 +87,7 @@ def main() -> None:
         num_workers=cfg.training.num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        collate_fn=collator,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -90,6 +96,7 @@ def main() -> None:
         num_workers=cfg.training.num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        collate_fn=collator,
     )
 
     model = GPT(cfg.model)
@@ -105,16 +112,19 @@ def main() -> None:
             raise ValueError(f"Pretrained checkpoint missing model_config: {pretrained_ckpt_path}")
 
         loaded_cfg = ModelConfig(**ckpt_model_cfg)
-        if loaded_cfg != cfg.model:
+        if not is_weight_compatible(ckpt_model_cfg, cfg.model):
+            differences = context_extension_differences(
+                ckpt_model_cfg,
+                cfg.model,
+            )
             raise ValueError(
-                "SFT model config does not match the model config stored in the pretrained checkpoint.\n"
-                f"SFT config:      {cfg.model}\n"
-                f"Checkpoint cfg:  {loaded_cfg}"
+                "SFT model parameters are incompatible with the pretrained "
+                f"checkpoint. Differences: {differences}"
             )
 
         verify_checkpoint_fingerprints(
             pretrained_state,
-            model_config=cfg.model,
+            model_config=loaded_cfg,
             tokenizer_model_path=cfg.data.tokenizer_model_path,
             context="pretrained checkpoint",
         )

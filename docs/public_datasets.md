@@ -6,7 +6,7 @@ to the expected commit, rate-limits requests, resumes interrupted downloads,
 deduplicates normalized records, and writes SHA-256 checksums to
 `data/public_sft/manifest.json`.
 
-Snapshot prepared on 2026-07-24:
+Snapshot refreshed and repository heads re-verified on 2026-07-25:
 
 | Stage | Source | Pinned revision | Included | Terms noted by source |
 |---|---|---|---:|---|

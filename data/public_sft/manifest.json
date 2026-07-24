@@ -7,7 +7,7 @@
   "sft_validation_records": 173,
   "sft_train_path": "E:\\Tiny-LLM\\data\\public_sft\\train.jsonl",
   "sft_validation_path": "E:\\Tiny-LLM\\data\\public_sft\\validation.jsonl",
-  "sft_train_sha256": "6417bf3efa5d7ba7db8d09c5aad13e0943c37c11bf41b454bb48febb0c089bb5",
+  "sft_train_sha256": "25594fdbb05784e7c173a5a9bf55f9f85ee0515d31f57837f77f1c880a1fe553",
   "sft_validation_sha256": "795ce7d7b076335621edc31fb953ab8d905bd2904827c24f93dd1abb65906f73",
   "sources": [
     {

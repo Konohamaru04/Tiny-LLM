@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.datasets import SFTJsonlDataset
+from src.datasets import SFTBatchCollator, SFTJsonlDataset
 from tests._helpers import train_test_tokenizer, write_jsonl
 
 
@@ -33,8 +33,8 @@ class SFTDatasetTests(unittest.TestCase):
             input_ids, labels = dataset[0]
 
             self.assertEqual(len(dataset), 2)
-            self.assertEqual(input_ids.shape[0], 96)
-            self.assertEqual(labels.shape[0], 96)
+            self.assertEqual(input_ids.shape, labels.shape)
+            self.assertLessEqual(input_ids.shape[0], 96)
             self.assertIn(-100, labels.tolist())
             self.assertTrue(any(token >= 0 for token in labels.tolist()))
 
@@ -93,3 +93,41 @@ class SFTDatasetTests(unittest.TestCase):
             self.assertIn(tokenizer.token_to_id("<|think|>"), supervised)
             self.assertIn(tokenizer.token_to_id("<|tool_call|>"), supervised)
             self.assertNotIn(tokenizer.token_to_id("<|tool_response|>"), supervised)
+            self.assertIn(tokenizer.token_to_id("<|final|>"), supervised)
+
+    def test_sft_collator_pads_only_to_longest_example(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tokenizer = train_test_tokenizer(root)
+            jsonl_path = write_jsonl(
+                root / "dynamic.jsonl",
+                [
+                    {"system": "", "user": "Hi", "assistant": "Hello."},
+                    {
+                        "system": "",
+                        "user": "Explain tokenization.",
+                        "assistant": "Tokenization maps text into a sequence of token IDs.",
+                    },
+                ],
+            )
+            dataset = SFTJsonlDataset(jsonl_path, tokenizer=tokenizer, block_size=256)
+            collator = SFTBatchCollator(tokenizer.pad_id)
+            input_batch, label_batch = collator([dataset[0], dataset[1]])
+
+            expected_length = max(dataset[0][0].numel(), dataset[1][0].numel())
+            self.assertEqual(input_batch.shape, (2, expected_length))
+            self.assertEqual(label_batch.shape, input_batch.shape)
+            shorter_index = 0 if dataset[0][0].numel() < dataset[1][0].numel() else 1
+            shorter_length = dataset[shorter_index][0].numel()
+            self.assertTrue(
+                all(
+                    token == tokenizer.pad_id
+                    for token in input_batch[shorter_index, shorter_length:].tolist()
+                )
+            )
+            self.assertTrue(
+                all(
+                    token == -100
+                    for token in label_batch[shorter_index, shorter_length:].tolist()
+                )
+            )

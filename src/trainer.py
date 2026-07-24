@@ -143,8 +143,8 @@ class Trainer:
             self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_grad_scaler)
 
         self.output_dir = ensure_dir(self.training_config.output_dir)
-        self.latest_path = self.output_dir / "latest.pt"
-        self.best_path = self.output_dir / "best.pt"
+        self.latest_path = self.output_dir / "latest.safetensors"
+        self.best_path = self.output_dir / "best.safetensors"
         self.metrics_jsonl_path = (
             resolve_path(self.training_config.metrics_jsonl_path)
             if getattr(self.training_config, "metrics_jsonl_path", "")
@@ -233,6 +233,8 @@ class Trainer:
             "tokens_per_sec",
             "best_val_loss",
             "bad_eval_count",
+            "router_load_balance_loss",
+            "router_z_loss",
         ]
         ensure_parent_dir(self.metrics_csv_path)
         csv_exists = self.metrics_csv_path.exists()
@@ -250,6 +252,13 @@ class Trainer:
         lr: float | None = None,
         tokens_per_sec: float | None = None,
     ) -> None:
+        raw_model = unwrap_model(self.model)
+        router_load_balance = getattr(
+            raw_model,
+            "last_router_load_balance_loss",
+            None,
+        )
+        router_z = getattr(raw_model, "last_router_z_loss", None)
         row = {
             "step": self.global_step,
             "event": event,
@@ -261,6 +270,16 @@ class Trainer:
             "tokens_per_sec": None if tokens_per_sec is None else round(float(tokens_per_sec), 2),
             "best_val_loss": round(float(self.best_val_loss), 6) if math.isfinite(self.best_val_loss) else None,
             "bad_eval_count": int(self.bad_eval_count),
+            "router_load_balance_loss": (
+                None
+                if router_load_balance is None
+                else round(float(router_load_balance.cpu().item()), 6)
+            ),
+            "router_z_loss": (
+                None
+                if router_z is None
+                else round(float(router_z.cpu().item()), 6)
+            ),
         }
         self._append_metrics_row(row)
 
@@ -470,14 +489,20 @@ class Trainer:
 
                 if self.training_config.patience > 0 and self.bad_eval_count >= self.training_config.patience:
                     self.save_checkpoint(self.latest_path, "latest")
-                    snapshot = self.output_dir / f"step_{self.global_step:07d}.pt"
+                    snapshot = (
+                        self.output_dir
+                        / f"step_{self.global_step:07d}.safetensors"
+                    )
                     self.save_checkpoint(snapshot, f"snapshot@{self.global_step}")
                     print("[early-stop] patience exhausted. Stopping training.")
                     return
 
             if should_save:
                 self.save_checkpoint(self.latest_path, "latest")
-                snapshot = self.output_dir / f"step_{self.global_step:07d}.pt"
+                snapshot = (
+                    self.output_dir
+                    / f"step_{self.global_step:07d}.safetensors"
+                )
                 self.save_checkpoint(snapshot, f"snapshot@{self.global_step}")
 
         print("[train] finished max_steps.")
