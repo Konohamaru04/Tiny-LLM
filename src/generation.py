@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Iterator, List, Sequence, Tuple
+from typing import Any, Iterator, List, Mapping, Sequence, Tuple
 
 import torch
 
+from src.capabilities import ThinkingMode, ToolDefinition, build_capability_prefix
 from src.tokenizer_utils import SentencePieceTokenizer
 
 
@@ -24,16 +25,22 @@ def build_chat_prompt_tokens(
     block_size: int,
     max_history_turns: int = 4,
     json_mode: bool = False,
+    thinking_mode: str | ThinkingMode = ThinkingMode.OFF,
+    tools: Sequence[ToolDefinition | Mapping[str, Any]] = (),
 ) -> List[int]:
     if block_size < 8:
         raise ValueError("block_size must be at least 8 for chat prompting.")
 
     user_message = _normalize_chat_text(user_message)
     system_prompt = _normalize_chat_text(system_prompt)
-
     turns = list(history[-max_history_turns:] if max_history_turns > 0 else [])
 
     assistant_prefix = tokenizer.encode("<|assistant|>\n", add_bos=False, add_eos=False)
+    capability_prefix = tokenizer.encode(
+        build_capability_prefix(thinking_mode=thinking_mode, tools=tools),
+        add_bos=False,
+        add_eos=False,
+    )
     json_prefix = tokenizer.encode("<|json|>\n", add_bos=False, add_eos=False) if json_mode else []
 
     def compose(selected_turns: Sequence[Tuple[str, str]]) -> List[int]:
@@ -45,11 +52,11 @@ def build_chat_prompt_tokens(
             tokens.extend(_encode_role_segment(tokenizer, "<|assistant|>", assistant_text))
         tokens.extend(_encode_role_segment(tokenizer, "<|user|>", user_message))
         tokens.extend(assistant_prefix)
+        tokens.extend(capability_prefix)
         tokens.extend(json_prefix)
         return tokens
 
     prompt_tokens = compose(turns)
-
     while len(prompt_tokens) > block_size - 1 and turns:
         turns = turns[1:]
         prompt_tokens = compose(turns)
@@ -59,7 +66,6 @@ def build_chat_prompt_tokens(
         if tail[0] != tokenizer.bos_id:
             tail = [tokenizer.bos_id] + tail[-(block_size - 2) :]
         prompt_tokens = tail
-
     return prompt_tokens
 
 
@@ -70,19 +76,14 @@ def sample_next_token(
 ) -> torch.Tensor:
     if logits.dim() != 2:
         raise ValueError(f"logits must have shape [batch, vocab], got {tuple(logits.shape)}")
-
     if temperature <= 0.0:
         return torch.argmax(logits, dim=-1, keepdim=True)
-
     logits = logits / temperature
-
-    if top_k is not None and top_k > 0 and top_k < logits.size(-1):
+    if top_k is not None and 0 < top_k < logits.size(-1):
         top_values, _ = torch.topk(logits, top_k)
         kth_value = top_values[:, [-1]]
         logits = torch.where(logits < kth_value, torch.full_like(logits, float("-inf")), logits)
-
-    probs = torch.softmax(logits, dim=-1)
-    return torch.multinomial(probs, num_samples=1)
+    return torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1)
 
 
 def apply_repetition_penalty(
@@ -93,8 +94,7 @@ def apply_repetition_penalty(
     if repetition_penalty <= 1.0:
         return logits
     if token_history.dim() != 2:
-        raise ValueError(f"token_history must have shape [batch, time], got {tuple(token_history.shape)}")
-
+        raise ValueError("token_history must have shape [batch, time]")
     adjusted = logits.clone()
     for batch_idx in range(token_history.size(0)):
         token_ids = torch.unique(token_history[batch_idx])
@@ -118,35 +118,22 @@ def generate(
     stop_token_ids: Sequence[int] | None = None,
 ) -> torch.Tensor:
     if input_ids.dim() != 2:
-        raise ValueError(f"input_ids must have shape [batch, time], got {tuple(input_ids.shape)}")
+        raise ValueError("input_ids must have shape [batch, time]")
     if max_new_tokens <= 0:
         raise ValueError("max_new_tokens must be > 0")
-
     model.eval()
     stop_set = set(stop_token_ids or [])
-
     out = input_ids
     for _ in range(max_new_tokens):
         idx_cond = out[:, -model.config.block_size :]
         logits, _ = model(idx_cond)
-        next_token_logits = logits[:, -1, :]
         next_token_logits = apply_repetition_penalty(
-            next_token_logits,
-            idx_cond,
-            repetition_penalty=repetition_penalty,
+            logits[:, -1, :], idx_cond, repetition_penalty
         )
-        next_token = sample_next_token(
-            next_token_logits,
-            temperature=temperature,
-            top_k=top_k,
-        )
+        next_token = sample_next_token(next_token_logits, temperature, top_k)
         out = torch.cat([out, next_token], dim=1)
-
-        if stop_set:
-            done = [int(token.item()) in stop_set for token in next_token]
-            if all(done):
-                break
-
+        if stop_set and all(int(token.item()) in stop_set for token in next_token):
+            break
     return out
 
 
@@ -161,33 +148,20 @@ def generate_stream(
     stop_token_ids: Sequence[int] | None = None,
 ) -> Iterator[torch.Tensor]:
     if input_ids.dim() != 2:
-        raise ValueError(f"input_ids must have shape [batch, time], got {tuple(input_ids.shape)}")
+        raise ValueError("input_ids must have shape [batch, time]")
     if max_new_tokens <= 0:
         raise ValueError("max_new_tokens must be > 0")
-
     model.eval()
     stop_set = set(stop_token_ids or [])
-
     out = input_ids
     for _ in range(max_new_tokens):
         idx_cond = out[:, -model.config.block_size :]
         logits, _ = model(idx_cond)
-        next_token_logits = logits[:, -1, :]
         next_token_logits = apply_repetition_penalty(
-            next_token_logits,
-            idx_cond,
-            repetition_penalty=repetition_penalty,
+            logits[:, -1, :], idx_cond, repetition_penalty
         )
-        next_token = sample_next_token(
-            next_token_logits,
-            temperature=temperature,
-            top_k=top_k,
-        )
-
-        if stop_set:
-            done = [int(token.item()) in stop_set for token in next_token]
-            if all(done):
-                break
-
+        next_token = sample_next_token(next_token_logits, temperature, top_k)
+        if stop_set and all(int(token.item()) in stop_set for token in next_token):
+            break
         out = torch.cat([out, next_token], dim=1)
         yield next_token
