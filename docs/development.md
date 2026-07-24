@@ -31,6 +31,18 @@ The tests cover:
 
 ## Canonical local workflow
 
+For the complete staged MoE curriculum with live telemetry:
+
+```powershell
+python scripts/training_dashboard.py --inbrowser
+```
+
+The dashboard is a thin process controller: it launches the existing scripts,
+streams their combined output, tails the configured JSONL metrics, and never
+loads a second model copy.
+
+The equivalent manual workflow is:
+
 ```powershell
 python scripts/regenerate_datasets.py
 python scripts/train_tokenizer.py --config configs/tokenizer.yaml

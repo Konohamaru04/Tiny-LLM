@@ -25,6 +25,8 @@ evaluation, and terminal/web chat.
 - Multi-round tool execution with a safe calculator and timezone-aware clock
 - Resumable long-horizon tasks with atomic step checkpoints and bounded memory
 - Streaming terminal chat, persistent sessions, personas, and local web UI
+- One-click Gradio training control center with live loss, throughput,
+  learning-rate, MoE-router, pipeline, log, and checkpoint telemetry
 - Exact dataset revisions, resumable downloads, rate limiting, normalization,
   content deduplication, checksums, and deterministic splits
 
@@ -56,6 +58,7 @@ contract.
 - PyTorch 2.6+ and SafeTensors 0.5+
 - SentencePiece 0.2+
 - NumPy, PyYAML, tqdm, and aiofiles
+- Gradio 5.9+ and Plotly 5.24+ for the training dashboard
 
 CPU execution is supported but training is slow. A CUDA GPU with at least 16 GB
 VRAM is recommended for the 2K stage. The 16K stage requires SDPA, activation
@@ -75,7 +78,28 @@ Verify the runtime:
 python -c "import torch; print(torch.__version__); print('cuda=', torch.cuda.is_available()); print('cuda_runtime=', torch.version.cuda)"
 ```
 
-## End-to-end run
+## One-click training dashboard
+
+Launch the unified local control center:
+
+```powershell
+python scripts/training_dashboard.py --inbrowser
+```
+
+The default button runs the complete resumable `2K -> 4K -> 16K -> SFT`
+curriculum. Existing tokenizer/data artifacts are reused, each training stage
+automatically resumes its own `latest.safetensors` checkpoint, and missing
+required artifacts are prepared in dependency order. Dataset refresh and a
+full tokenizer/array rebuild are explicit options in the UI.
+
+The dashboard updates once per second from the trainer's append-only JSONL
+metrics. It does not load model weights into the web process, so visualization
+does not compete for GPU memory with training.
+
+By default it binds only to `127.0.0.1:7860`. Use `--host`, `--port`, or the
+opt-in `--share` flag when a different access mode is intentional.
+
+## End-to-end CLI run
 
 ```powershell
 python scripts/download_public_datasets.py --config configs/public_datasets.yaml --stage all
