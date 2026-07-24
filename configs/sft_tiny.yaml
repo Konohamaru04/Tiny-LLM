@@ -1,27 +1,34 @@
 model:
-  vocab_size: 2865
-  block_size: 1024
+  vocab_size: 8192
+  block_size: 2048
   n_layer: 8
   n_head: 6
+  n_kv_head: 2
   n_embd: 384
-  mlp_ratio: 4
-  dropout: 0.05
+  mlp_ratio: 2.6666667
+  mlp_multiple_of: 128
+  dropout: 0.0
   tie_weights: true
-  norm_type: layernorm
-  mlp_type: gelu
-  positional_embedding: learned
-  rope_theta: 10000.0
+  norm_type: rmsnorm
+  norm_eps: 1.0e-6
+  mlp_type: swiglu
+  positional_embedding: rope
+  rope_theta: 1000000.0
+  qk_norm: true
+  linear_bias: false
+  initializer_range: 0.02
+  residual_scale_init: true
   attention_impl: auto
-  gradient_checkpointing: false
+  gradient_checkpointing: true
 
 data:
   tokenizer_model_path: data/processed/tokenizer.model
-  train_jsonl_path: data/sft/sample_train.jsonl
-  val_jsonl_path: data/sft/sample_val.jsonl
+  train_jsonl_path: data/public_sft/train.jsonl
+  val_jsonl_path: data/public_sft/validation.jsonl
 
 training:
-  output_dir: checkpoints/sft_tiny
-  pretrained_checkpoint: checkpoints/pretrain_tiny/best.pt
+  output_dir: checkpoints/sft_modern
+  pretrained_checkpoint: checkpoints/pretrain_modern/best.pt
   seed: 0
   batch_size: 1
   gradient_accumulation_steps: 16
@@ -39,10 +46,10 @@ training:
   patience: 10
   use_amp: true
   resume_from: ""
-  metrics_jsonl_path: checkpoints/sft_tiny/metrics.jsonl
-  metrics_csv_path: checkpoints/sft_tiny/metrics.csv
+  metrics_jsonl_path: checkpoints/sft_modern/metrics.jsonl
+  metrics_csv_path: checkpoints/sft_modern/metrics.csv
   sample_prompts_path: configs/eval_prompts.jsonl
-  sample_output_dir: checkpoints/sft_tiny/sample_generations
+  sample_output_dir: checkpoints/sft_modern/sample_generations
   sample_system_prompt: You are a practical technical assistant who explains things clearly.
   sample_max_history_turns: 0
   sample_temperature: 0.4
@@ -53,3 +60,5 @@ training:
   compile_model: false
   compile_backend: ""
   compile_mode: ""
+  fused_optimizer: true
+  z_loss_coefficient: 1.0e-4

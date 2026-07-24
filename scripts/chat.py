@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -14,9 +15,11 @@ from src.chat_runtime import (
     load_personas,
     load_session,
     resolve_persona,
+    run_agent_turn,
     save_session,
 )
 from src.config import load_chat_config
+from src.tools import build_default_tool_registry
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,6 +106,8 @@ def main() -> None:
     print(f"device: {device}")
     print(f"persona: {active_persona.name}")
     print(f"json_mode: {json_mode}")
+    print(f"thinking_mode: {cfg.thinking_mode}")
+    print(f"tool_mode: {cfg.tool_mode}")
     if session_file:
         print(f"session_file: {Path(session_file).resolve()}")
     print("type ':help' for commands")
@@ -193,24 +198,55 @@ def main() -> None:
         def on_chunk(chunk: str) -> None:
             print(chunk, end="", flush=True)
 
-        response = generate_chat_response(
-            model=model,
-            tokenizer=tokenizer,
-            model_cfg=model_cfg,
-            device=device,
-            system_prompt=system_prompt,
-            history=history,
-            user_message=user_text,
-            max_history_turns=cfg.max_history_turns,
-            json_mode=json_mode,
-            temperature=temperature,
-            top_k=top_k,
-            max_new_tokens=max_new_tokens,
-            repetition_penalty=repetition_penalty,
-            on_text_chunk=on_chunk if stream else None,
-        )
+        if cfg.tool_mode:
+            agent_result = run_agent_turn(
+                model=model,
+                tokenizer=tokenizer,
+                model_cfg=model_cfg,
+                device=device,
+                system_prompt=system_prompt,
+                history=history,
+                user_message=user_text,
+                max_history_turns=cfg.max_history_turns,
+                registry=build_default_tool_registry(),
+                max_tool_rounds=cfg.max_tool_rounds,
+                json_mode=json_mode,
+                thinking_mode=cfg.thinking_mode,
+                temperature=temperature,
+                top_k=top_k,
+                max_new_tokens=max_new_tokens,
+                repetition_penalty=repetition_penalty,
+            )
+            response = agent_result.response
+            for event in agent_result.tool_events:
+                print(
+                    f"\n[tool] {event.call.name}"
+                    f"({json.dumps(event.call.arguments, ensure_ascii=False)}) -> "
+                    f"{json.dumps(event.output, ensure_ascii=False)}"
+                )
+            if agent_result.reached_tool_limit:
+                print("\n[tool] maximum tool rounds reached")
+            print(response, end="", flush=True)
+        else:
+            response = generate_chat_response(
+                model=model,
+                tokenizer=tokenizer,
+                model_cfg=model_cfg,
+                device=device,
+                system_prompt=system_prompt,
+                history=history,
+                user_message=user_text,
+                max_history_turns=cfg.max_history_turns,
+                json_mode=json_mode,
+                temperature=temperature,
+                top_k=top_k,
+                max_new_tokens=max_new_tokens,
+                repetition_penalty=repetition_penalty,
+                on_text_chunk=on_chunk if stream else None,
+                thinking_mode=cfg.thinking_mode,
+            )
 
-        if not stream:
+        if not stream and not cfg.tool_mode:
             print(response, end="", flush=True)
         if not response:
             response = "(empty response)"

@@ -79,3 +79,30 @@ class ConfigLoadingTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 load_chat_config(cfg_path)
+
+    def test_pretrain_config_rejects_invalid_grouped_query_attention(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "pretrain.yaml"
+            cfg_path.write_text(
+                textwrap.dedent(
+                    """
+                    model:
+                      vocab_size: 64
+                      block_size: 32
+                      n_layer: 2
+                      n_head: 6
+                      n_kv_head: 4
+                      n_embd: 48
+                    training:
+                      max_steps: 1
+                      eval_interval: 1
+                      eval_steps: 1
+                      save_interval: 1
+                      log_interval: 1
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "n_kv_head"):
+                load_pretrain_config(cfg_path)

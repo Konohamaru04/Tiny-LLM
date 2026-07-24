@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import inspect
 import json
 import math
 import time
@@ -36,6 +37,7 @@ def build_optimizer(
     model: torch.nn.Module,
     learning_rate: float,
     weight_decay: float,
+    fused: bool = True,
 ) -> torch.optim.Optimizer:
     decay_params = []
     no_decay_params = []
@@ -53,12 +55,18 @@ def build_optimizer(
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
 
-    return torch.optim.AdamW(
-        optim_groups,
-        lr=learning_rate,
-        betas=(0.9, 0.95),
-        eps=1e-8,
+    kwargs: dict[str, Any] = {
+        "lr": learning_rate,
+        "betas": (0.9, 0.95),
+        "eps": 1e-8,
+    }
+    supports_fused = "fused" in inspect.signature(torch.optim.AdamW).parameters
+    all_cuda = bool(decay_params or no_decay_params) and all(
+        param.device.type == "cuda" for param in decay_params + no_decay_params
     )
+    if supports_fused:
+        kwargs["fused"] = bool(fused and all_cuda)
+    return torch.optim.AdamW(optim_groups, **kwargs)
 
 
 def build_cosine_scheduler(
@@ -115,6 +123,7 @@ class Trainer:
             self.model,
             learning_rate=self.training_config.learning_rate,
             weight_decay=self.training_config.weight_decay,
+            fused=bool(getattr(self.training_config, "fused_optimizer", True)),
         )
         self.scheduler = build_cosine_scheduler(
             self.optimizer,
@@ -165,6 +174,19 @@ class Trainer:
         self.best_val_loss = float("inf")
         self.bad_eval_count = 0
         self.last_val_loss = float("inf")
+
+    def _forward_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        logits, loss = self.model(x, y)
+        if loss is None:
+            raise RuntimeError("Model returned no loss.")
+        coefficient = float(getattr(self.training_config, "z_loss_coefficient", 0.0))
+        if coefficient > 0.0:
+            valid = y.ne(-100)
+            if valid.any():
+                log_z = torch.logsumexp(logits.float(), dim=-1)
+                z_loss = log_z[valid].square().mean()
+                loss = loss + (coefficient * z_loss)
+        return loss
 
     def _autocast_context(self):
         if not self.amp_enabled:
@@ -313,9 +335,7 @@ class Trainer:
                 x, y = batch
                 x = x.to(self.device, non_blocking=self.device.type == "cuda")
                 y = y.to(self.device, non_blocking=self.device.type == "cuda")
-                _, loss = self.model(x, y)
-                if loss is None:
-                    raise RuntimeError("Model returned no loss during evaluation.")
+                loss = self._forward_loss(x, y)
                 losses.append(float(loss.detach().cpu().item()))
 
         self.model.train()
@@ -359,9 +379,7 @@ class Trainer:
                 y = y.to(self.device, non_blocking=self.device.type == "cuda")
 
                 with self._autocast_context():
-                    _, loss = self.model(x, y)
-                    if loss is None:
-                        raise RuntimeError("Model returned no loss during training.")
+                    loss = self._forward_loss(x, y)
                     if not torch.isfinite(loss):
                         raise RuntimeError(
                             f"Non-finite loss encountered at global_step={self.global_step}: {loss.item()}"

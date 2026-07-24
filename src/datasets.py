@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 from src.tokenizer_utils import SentencePieceTokenizer
+from src.chat_format import encode_conversation
 from src.utils import assert_exists
 
 
@@ -40,8 +41,6 @@ class PretrainNpyDataset(Dataset):
 
 
 class SFTJsonlDataset(Dataset):
-    REQUIRED_KEYS = ("system", "user", "assistant")
-
     def __init__(
         self,
         jsonl_path: str | Path,
@@ -71,60 +70,90 @@ class SFTJsonlDataset(Dataset):
         if not self.examples:
             raise ValueError(f"No usable SFT examples found in {self.jsonl_path}")
 
-    def _normalize_text(self, value: Any, key: str, line_no: int) -> str:
-        if not isinstance(value, str):
-            raise ValueError(
-                f"SFT row {line_no} in {self.jsonl_path} has non-string field '{key}': {type(value).__name__}"
-            )
-        return value.replace("\r\n", "\n").replace("\r", "\n").strip()
-
     def _validate_row(self, row: Dict[str, Any], line_no: int) -> None:
         if not isinstance(row, dict):
             raise ValueError(f"SFT row {line_no} in {self.jsonl_path} must be a JSON object.")
-        missing = [k for k in self.REQUIRED_KEYS if k not in row]
-        if missing:
+        has_messages = isinstance(row.get("messages"), list) and bool(row["messages"])
+        has_legacy = all(key in row for key in ("system", "user", "assistant"))
+        if not has_messages and not has_legacy:
             raise ValueError(
-                f"SFT row {line_no} in {self.jsonl_path} is missing required fields: {missing}"
+                f"SFT row {line_no} in {self.jsonl_path} must contain a non-empty 'messages' "
+                "list or legacy system/user/assistant fields."
             )
 
-    def _encode_role_text(self, role_token: str, text: str) -> List[int]:
-        chunk = f"{role_token}\n{text}\n"
-        return self.tokenizer.encode(chunk, add_bos=False, add_eos=False)
+    def _messages_from_row(self, row: Mapping[str, Any], line_no: int) -> List[Dict[str, Any]]:
+        raw_messages = row.get("messages")
+        if isinstance(raw_messages, list) and raw_messages:
+            messages: List[Dict[str, Any]] = []
+            for message_index, message in enumerate(raw_messages):
+                if not isinstance(message, dict):
+                    raise ValueError(
+                        f"SFT row {line_no} message {message_index} in {self.jsonl_path} "
+                        "must be an object."
+                    )
+                messages.append(dict(message))
+            return messages
+
+        values: Dict[str, str] = {}
+        for key in ("system", "user", "assistant"):
+            value = row.get(key)
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"SFT row {line_no} in {self.jsonl_path} has non-string field "
+                    f"'{key}': {type(value).__name__}"
+                )
+            values[key] = value
+        messages = []
+        if values["system"].strip():
+            messages.append({"role": "system", "content": values["system"]})
+        messages.append({"role": "user", "content": values["user"]})
+        messages.append({"role": "assistant", "content": values["assistant"]})
+        return messages
 
     def _build_example(self, row: Dict[str, Any], line_no: int) -> Tuple[torch.Tensor, torch.Tensor]:
         self._validate_row(row, line_no)
-
-        system_text = self._normalize_text(row["system"], "system", line_no)
-        user_text = self._normalize_text(row["user"], "user", line_no)
-        assistant_text = self._normalize_text(row["assistant"], "assistant", line_no)
-
-        bos = [self.tokenizer.bos_id]
-        prefix_tokens = bos[:]
-
-        if system_text:
-            prefix_tokens.extend(self._encode_role_text("<|system|>", system_text))
-
-        prefix_tokens.extend(self._encode_role_text("<|user|>", user_text))
-        prefix_tokens.extend(self.tokenizer.encode("<|assistant|>\n", add_bos=False, add_eos=False))
-
-        assistant_tokens = self.tokenizer.encode(assistant_text, add_bos=False, add_eos=False)
-        assistant_tokens.append(self.tokenizer.eos_id)
-
-        if len(prefix_tokens) + len(assistant_tokens) <= self.max_seq_len:
-            full_seq = prefix_tokens + assistant_tokens
-            assistant_start = len(prefix_tokens)
+        messages = self._messages_from_row(row, line_no)
+        raw_tools = row.get("tools")
+        if raw_tools in (None, ""):
+            tools = None
+        elif isinstance(raw_tools, list):
+            tools = raw_tools
         else:
-            if len(assistant_tokens) >= self.max_seq_len:
-                full_seq = assistant_tokens[-self.max_seq_len :]
-                assistant_start = 0
-            else:
-                keep_prefix = self.max_seq_len - len(assistant_tokens)
-                full_seq = prefix_tokens[-keep_prefix:] + assistant_tokens
-                assistant_start = len(full_seq) - len(assistant_tokens)
+            raise ValueError(f"SFT row {line_no} in {self.jsonl_path} has non-list 'tools'.")
+
+        full_seq, full_loss_mask = encode_conversation(
+            self.tokenizer,
+            messages,
+            tools=tools,
+        )
+
+        if len(full_seq) > self.max_seq_len:
+            supervised_positions = [
+                index for index, supervised in enumerate(full_loss_mask) if supervised
+            ]
+            if not supervised_positions:
+                raise ValueError(
+                    f"SFT row {line_no} in {self.jsonl_path} has no assistant tokens to supervise."
+                )
+            # End the window at the last assistant target. Long agent traces often
+            # finish with a large tool response; blindly taking the tail can leave
+            # an almost entirely masked training example.
+            window_end = supervised_positions[-1] + 1
+            window_start = max(0, window_end - self.max_seq_len)
+            full_seq = full_seq[window_start:window_end]
+            full_loss_mask = full_loss_mask[window_start:window_end]
+            full_seq[0] = self.tokenizer.bos_id
+            full_loss_mask[0] = False
 
         if len(full_seq) < self.max_seq_len:
             pad_len = self.max_seq_len - len(full_seq)
             full_seq.extend([self.tokenizer.pad_id] * pad_len)
+            full_loss_mask.extend([False] * pad_len)
+
+        if not any(full_loss_mask):
+            raise ValueError(
+                f"SFT row {line_no} in {self.jsonl_path} has no assistant tokens to supervise."
+            )
 
         input_ids = full_seq[:-1]
         labels: List[int] = []
@@ -133,7 +162,7 @@ class SFTJsonlDataset(Dataset):
             target_index = i + 1
             target_token = full_seq[target_index]
 
-            if target_token == self.tokenizer.pad_id or target_index < assistant_start:
+            if target_token == self.tokenizer.pad_id or not full_loss_mask[target_index]:
                 labels.append(-100)
             else:
                 labels.append(target_token)

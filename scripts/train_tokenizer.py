@@ -10,7 +10,9 @@ if str(ROOT) not in sys.path:
 
 from src.config import load_tokenizer_config
 from src.data_utils import (
+    append_sft_jsonl_to_corpus,
     collect_markdown_files,
+    deduplicate_markdown_files,
     deterministic_train_val_split,
     save_manifest,
     write_combined_corpus,
@@ -36,7 +38,8 @@ def main() -> None:
 
     ensure_dir(cfg.processed_data_dir)
 
-    raw_files = collect_markdown_files(cfg.raw_data_dir)
+    discovered_raw_files = collect_markdown_files(cfg.raw_data_dir)
+    raw_files, duplicate_raw_files = deduplicate_markdown_files(discovered_raw_files)
     train_files, val_files = deterministic_train_val_split(
         raw_files,
         val_fraction=cfg.val_fraction,
@@ -48,6 +51,24 @@ def main() -> None:
 
     train_doc_count = write_combined_corpus(train_files, cfg.train_corpus_path)
     val_doc_count = write_combined_corpus(val_files, cfg.val_corpus_path)
+    additional_corpus_stats = {"records": 0, "segments": 0}
+    available_additional_paths = [
+        path for path in cfg.additional_corpus_jsonl_paths if resolve_path(path).exists()
+    ]
+    missing_additional_paths = [
+        path for path in cfg.additional_corpus_jsonl_paths if not resolve_path(path).exists()
+    ]
+    if missing_additional_paths and cfg.require_additional_corpus:
+        formatted = "\n".join(f"  - {resolve_path(path)}" for path in missing_additional_paths)
+        raise FileNotFoundError(
+            "Required additional tokenizer corpora are missing. Download public datasets first:\n"
+            f"{formatted}"
+        )
+    if available_additional_paths:
+        additional_corpus_stats = append_sft_jsonl_to_corpus(
+            available_additional_paths,
+            cfg.train_corpus_path,
+        )
 
     model_path, vocab_path = train_sentencepiece_tokenizer(
         input_text_path=cfg.train_corpus_path,
@@ -72,15 +93,26 @@ def main() -> None:
         "model_type": cfg.model_type,
         "seed": cfg.seed,
         "val_fraction": cfg.val_fraction,
+        "discovered_documents": len(discovered_raw_files),
+        "duplicate_documents_skipped": len(duplicate_raw_files),
+        "unique_documents": len(raw_files),
         "train_documents": len(train_files),
         "val_documents": len(val_files),
         "train_documents_kept_after_normalization": train_doc_count,
         "val_documents_kept_after_normalization": val_doc_count,
+        "additional_corpus_jsonl_paths": [
+            str(resolve_path(path)) for path in available_additional_paths
+        ],
+        "additional_corpus_records": additional_corpus_stats["records"],
+        "additional_corpus_segments": additional_corpus_stats["segments"],
         "special_tokens": tokenizer.get_special_token_map(),
     }
     write_json(meta, cfg.tokenizer_meta_path)
 
     print("[done] tokenizer training complete")
+    print(f"[info] discovered docs: {len(discovered_raw_files)}")
+    print(f"[info] duplicate docs skipped: {len(duplicate_raw_files)}")
+    print(f"[info] unique docs: {len(raw_files)}")
     print(f"[info] train docs: {len(train_files)}")
     print(f"[info] val docs:   {len(val_files)}")
     print(f"[info] model:      {resolve_path(model_path)}")
@@ -88,6 +120,12 @@ def main() -> None:
     print(f"[info] meta:       {resolve_path(cfg.tokenizer_meta_path)}")
     print(f"[info] vocab size requested: {cfg.vocab_size}")
     print(f"[info] vocab size actual:    {tokenizer.vocab_size}")
+    print(
+        f"[info] additional SFT corpus: {additional_corpus_stats['records']} records, "
+        f"{additional_corpus_stats['segments']} text segments"
+    )
+    for missing_path in missing_additional_paths:
+        print(f"[warning] optional tokenizer corpus not found: {resolve_path(missing_path)}")
 
     if tokenizer.vocab_size != cfg.vocab_size:
         print(

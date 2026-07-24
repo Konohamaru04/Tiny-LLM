@@ -11,22 +11,26 @@ from src.config import ModelConfig
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm = x.pow(2).mean(dim=-1, keepdim=True)
-        x = x * torch.rsqrt(norm + self.eps)
-        return self.weight * x
+        if hasattr(F, "rms_norm"):
+            return F.rms_norm(x, (x.shape[-1],), self.weight, self.eps)
+        input_dtype = x.dtype
+        x_float = x.float()
+        norm = x_float.pow(2).mean(dim=-1, keepdim=True)
+        normalized = x_float * torch.rsqrt(norm + self.eps)
+        return (self.weight.float() * normalized).to(dtype=input_dtype)
 
 
 def build_norm(config: ModelConfig) -> nn.Module:
     if config.norm_type == "layernorm":
-        return nn.LayerNorm(config.n_embd)
+        return nn.LayerNorm(config.n_embd, eps=config.norm_eps)
     if config.norm_type == "rmsnorm":
-        return RMSNorm(config.n_embd)
+        return RMSNorm(config.n_embd, eps=config.norm_eps)
     raise ValueError(f"Unsupported norm_type: {config.norm_type}")
 
 
@@ -46,15 +50,24 @@ class CausalSelfAttention(nn.Module):
             )
 
         self.n_head = config.n_head
+        self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
+        self.kv_dim = self.n_kv_head * self.head_dim
+        self.kv_repeat = self.n_head // self.n_kv_head
         self.dropout = config.dropout
         self.attention_impl = config.attention_impl
         self.use_rope = config.positional_embedding == "rope"
         self.use_sdpa = self._select_attention_impl(config.attention_impl)
 
-        self.qkv_proj = nn.Linear(config.n_embd, 3 * config.n_embd)
-        self.out_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.qkv_proj = nn.Linear(
+            config.n_embd,
+            config.n_embd + (2 * self.kv_dim),
+            bias=config.linear_bias,
+        )
+        self.out_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.linear_bias)
+        self.q_norm = RMSNorm(self.head_dim, eps=config.norm_eps) if config.qk_norm else nn.Identity()
+        self.k_norm = RMSNorm(self.head_dim, eps=config.norm_eps) if config.qk_norm else nn.Identity()
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
@@ -97,25 +110,40 @@ class CausalSelfAttention(nn.Module):
         bsz, seq_len, channels = x.shape
 
         qkv = self.qkv_proj(x)
-        q, k, v = qkv.split(self.n_embd, dim=2)
+        q, k, v = qkv.split((self.n_embd, self.kv_dim, self.kv_dim), dim=2)
 
         q = q.view(bsz, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        k = k.view(bsz, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(bsz, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(bsz, seq_len, self.n_kv_head, self.head_dim).transpose(1, 2)
+        v = v.view(bsz, seq_len, self.n_kv_head, self.head_dim).transpose(1, 2)
 
-        q = self._apply_rope(q)
-        k = self._apply_rope(k)
+        q = self._apply_rope(self.q_norm(q))
+        k = self._apply_rope(self.k_norm(k))
 
         if self.use_sdpa:
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=True,
-            )
+            try:
+                y = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=True,
+                    enable_gqa=self.n_head != self.n_kv_head,
+                )
+            except TypeError:  # PyTorch versions before native GQA support.
+                k = k.repeat_interleave(self.kv_repeat, dim=1)
+                v = v.repeat_interleave(self.kv_repeat, dim=1)
+                y = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=True,
+                )
         else:
+            k = k.repeat_interleave(self.kv_repeat, dim=1)
+            v = v.repeat_interleave(self.kv_repeat, dim=1)
             att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
             mask = self.causal_mask[:, :, :seq_len, :seq_len]
             att = att.masked_fill(~mask, float("-inf"))
@@ -132,11 +160,19 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
-        hidden_dim = config.n_embd * config.mlp_ratio
+        raw_hidden_dim = config.n_embd * config.mlp_ratio
+        hidden_dim = int(
+            config.mlp_multiple_of
+            * math.ceil(raw_hidden_dim / config.mlp_multiple_of)
+        )
         self.mlp_type = config.mlp_type
-        self.fc = nn.Linear(config.n_embd, hidden_dim)
-        self.gate = nn.Linear(config.n_embd, hidden_dim) if self.mlp_type == "swiglu" else None
-        self.proj = nn.Linear(hidden_dim, config.n_embd)
+        self.fc = nn.Linear(config.n_embd, hidden_dim, bias=config.linear_bias)
+        self.gate = (
+            nn.Linear(config.n_embd, hidden_dim, bias=config.linear_bias)
+            if self.mlp_type == "swiglu"
+            else None
+        )
+        self.proj = nn.Linear(hidden_dim, config.n_embd, bias=config.linear_bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -186,14 +222,19 @@ class GPT(nn.Module):
             self.lm_head.weight = self.token_emb.weight
 
         self.apply(self._init_weights)
+        if config.residual_scale_init:
+            residual_std = config.initializer_range / math.sqrt(2 * config.n_layer)
+            for block in self.blocks:
+                nn.init.normal_(block.attn.out_proj.weight, mean=0.0, std=residual_std)
+                nn.init.normal_(block.mlp.proj.weight, mean=0.0, std=residual_std)
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
 
     def forward(
         self,

@@ -1,46 +1,78 @@
-# Model Upgrades
+# Modern model and training stack
 
-Phase 4 adds backward-compatible model and training upgrades behind config
-flags.
+The default configuration is now a compact 2026-style decoder-only
+Transformer. The implementation remains pure PyTorch and intentionally small
+enough to study.
 
-## Model options
+## Architecture
 
-These live under the `model:` section in
-[pretrain_tiny.yaml](/E:/Tiny-LLM/configs/pretrain_tiny.yaml) and
-[sft_tiny.yaml](/E:/Tiny-LLM/configs/sft_tiny.yaml).
+- Pre-normalized RMSNorm with `norm_eps: 1e-6`
+- Rotary position embeddings (RoPE) with `rope_theta: 1_000_000`
+- Grouped-query attention (GQA): 6 query heads and 2 key/value heads
+- Per-head QK normalization
+- PyTorch scaled dot-product attention, including native GQA when available
+- SwiGLU feed-forward layers with hardware-friendly hidden-size rounding
+- Bias-free linear projections
+- Tied input/output embeddings
+- Depth-scaled residual projection initialization
+- 2,048-token context window
 
-- `norm_type`: `layernorm` or `rmsnorm`
-- `mlp_type`: `gelu` or `swiglu`
-- `positional_embedding`: `learned` or `rope`
-- `rope_theta`: RoPE base frequency
-- `attention_impl`: `auto`, `manual`, or `sdpa`
-- `gradient_checkpointing`: `true` or `false`
+The compatibility switches in `ModelConfig` still support learned positions,
+LayerNorm, GELU MLPs, equal query/KV head counts, and manual attention for
+experiments.
 
-Defaults preserve the original architecture, but `attention_impl: auto` will
-use PyTorch scaled dot-product attention when available.
+## Training optimizations
 
-## Training options
+- Mixed precision where supported
+- Gradient accumulation and clipping
+- Activation checkpointing
+- Fused AdamW on supported CUDA runtimes
+- Cosine learning-rate decay with warmup
+- Auxiliary logit z-loss for stability
+- Stable model/tokenizer fingerprints in checkpoints
+- Optional `torch.compile`
 
-These live under the `training:` section.
+`attention_impl: auto` selects scaled dot-product attention when the installed
+PyTorch runtime supports it and otherwise uses the manual implementation.
 
-- `compile_model`
-- `compile_backend`
-- `compile_mode`
+## Reasoning and tool use
 
-`compile_model` is off by default because compile behavior can vary by platform.
+The tokenizer and SFT pipeline use one canonical multi-turn format:
 
-## Checkpoint safety
+```text
+<|system|> ...
+<|tools|> [...] </|tools|>
+<|user|> ...
+<|assistant|>
+<|think|> ... </|think|>
+<|tool_call|> {...} </|tool_call|>
+<|tool_response|> {...} </|tool_response|>
+```
 
-New checkpoints now store:
+SFT loss is applied only to assistant reasoning, tool calls, and answers. Tool
+responses remain context, not targets. The runtime can execute multiple tool
+rounds and feed results back into generation. Its built-in calculator uses a
+restricted expression AST; it never evaluates Python code. The other built-in
+tool returns the current date/time for an IANA timezone.
 
-- a stable hash of `model_config`
-- a SHA-256 hash of the tokenizer model file
+These are trainable capabilities, not a claim that untrained weights already
+reason reliably. Retrain pretraining and SFT checkpoints after this upgrade.
 
-On resume and other load paths, those fingerprints are verified when present.
-That helps catch silent mismatches between checkpoints, configs, and tokenizer
-artifacts.
+## Checkpoint compatibility
 
-## Sampling
+The new tokenizer vocabulary, GQA projection shapes, and model defaults are
+not compatible with old `pretrain_tiny` or `sft_tiny` weights. New artifacts
+are written to:
 
-[chat.yaml](/E:/Tiny-LLM/configs/chat.yaml) now supports `repetition_penalty`
-for a small amount of repetition control during generation and evaluation.
+- `checkpoints/pretrain_modern/`
+- `checkpoints/sft_modern/`
+
+Configuration and tokenizer fingerprints are checked during resume and chat
+loading to make mismatches fail early.
+
+## Technical references
+
+- [Qwen3 Technical Report](https://arxiv.org/abs/2505.09388)
+- [Gemma 3 Technical Report](https://arxiv.org/abs/2503.19786)
+- [OLMo 3 Technical Report](https://arxiv.org/abs/2512.13961)
+- [PyTorch scaled dot-product attention](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention)

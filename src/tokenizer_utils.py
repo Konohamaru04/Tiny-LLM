@@ -10,10 +10,19 @@ from src.utils import assert_exists, ensure_parent_dir, resolve_path
 
 REQUIRED_USER_DEFINED_SYMBOLS = [
     "<|system|>",
+    "<|developer|>",
     "<|user|>",
     "<|assistant|>",
     "<|json|>",
     "</json>",
+    "<|tools|>",
+    "</|tools|>",
+    "<|think|>",
+    "</|think|>",
+    "<|tool_call|>",
+    "</|tool_call|>",
+    "<|tool_response|>",
+    "</|tool_response|>",
 ]
 
 

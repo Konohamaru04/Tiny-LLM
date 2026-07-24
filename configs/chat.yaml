@@ -1,6 +1,6 @@
-checkpoint_path: checkpoints/sft_tiny/best.pt
+checkpoint_path: checkpoints/sft_modern/best.pt
 tokenizer_model_path: data/processed/tokenizer.model
-system_prompt: You are a practical technical assistant who explains things clearly.
+system_prompt: You are a practical assistant. Think carefully when needed, use available tools when they improve accuracy, and ground the final answer in tool results.
 personas_path: configs/personas.json
 default_persona: technical
 session_file: logs/chat_session.json
@@ -11,4 +11,7 @@ max_new_tokens: 1024
 repetition_penalty: 1.05
 stream: true
 json_mode: false
+thinking_mode: true
+tool_mode: true
+max_tool_rounds: 4
 device: auto

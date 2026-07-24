@@ -4,6 +4,7 @@ from typing import Iterator, List, Sequence, Tuple
 
 import torch
 
+from src.chat_format import encode_conversation, legacy_turns_to_messages
 from src.tokenizer_utils import SentencePieceTokenizer
 
 
@@ -24,28 +25,28 @@ def build_chat_prompt_tokens(
     block_size: int,
     max_history_turns: int = 4,
     json_mode: bool = False,
+    tools: Sequence[dict] | None = None,
+    thinking_mode: bool = False,
 ) -> List[int]:
     if block_size < 8:
         raise ValueError("block_size must be at least 8 for chat prompting.")
 
-    user_message = _normalize_chat_text(user_message)
-    system_prompt = _normalize_chat_text(system_prompt)
-
     turns = list(history[-max_history_turns:] if max_history_turns > 0 else [])
 
-    assistant_prefix = tokenizer.encode("<|assistant|>\n", add_bos=False, add_eos=False)
-    json_prefix = tokenizer.encode("<|json|>\n", add_bos=False, add_eos=False) if json_mode else []
-
     def compose(selected_turns: Sequence[Tuple[str, str]]) -> List[int]:
-        tokens = [tokenizer.bos_id]
-        if system_prompt:
-            tokens.extend(_encode_role_segment(tokenizer, "<|system|>", system_prompt))
-        for user_text, assistant_text in selected_turns:
-            tokens.extend(_encode_role_segment(tokenizer, "<|user|>", user_text))
-            tokens.extend(_encode_role_segment(tokenizer, "<|assistant|>", assistant_text))
-        tokens.extend(_encode_role_segment(tokenizer, "<|user|>", user_message))
-        tokens.extend(assistant_prefix)
-        tokens.extend(json_prefix)
+        messages = legacy_turns_to_messages(
+            system_prompt,
+            selected_turns,
+            user_message,
+        )
+        tokens, _ = encode_conversation(
+            tokenizer,
+            messages,
+            tools=tools,
+            add_generation_prompt=True,
+            json_mode=json_mode,
+            thinking_mode=thinking_mode,
+        )
         return tokens
 
     prompt_tokens = compose(turns)
@@ -61,6 +62,28 @@ def build_chat_prompt_tokens(
         prompt_tokens = tail
 
     return prompt_tokens
+
+
+def build_messages_prompt_tokens(
+    tokenizer: SentencePieceTokenizer,
+    messages: Sequence[dict],
+    block_size: int,
+    *,
+    tools: Sequence[dict] | None = None,
+    json_mode: bool = False,
+    thinking_mode: bool = False,
+) -> List[int]:
+    tokens, _ = encode_conversation(
+        tokenizer,
+        messages,
+        tools=tools,
+        add_generation_prompt=True,
+        json_mode=json_mode,
+        thinking_mode=thinking_mode,
+    )
+    if len(tokens) > block_size - 1:
+        tokens = [tokenizer.bos_id] + tokens[-(block_size - 2) :]
+    return tokens
 
 
 def sample_next_token(

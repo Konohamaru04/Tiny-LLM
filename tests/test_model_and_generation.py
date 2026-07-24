@@ -39,6 +39,7 @@ class ModelAndGenerationTests(unittest.TestCase):
             block_size=16,
             n_layer=2,
             n_head=2,
+            n_kv_head=1,
             n_embd=16,
             mlp_ratio=2,
             dropout=0.0,
@@ -58,6 +59,10 @@ class ModelAndGenerationTests(unittest.TestCase):
         self.assertEqual(logits.shape, (2, cfg.block_size, cfg.vocab_size))
         self.assertIsNotNone(loss)
         self.assertTrue(torch.isfinite(loss))
+        self.assertEqual(
+            model.blocks[0].attn.qkv_proj.out_features,
+            cfg.n_embd + 2 * (cfg.n_kv_head * (cfg.n_embd // cfg.n_head)),
+        )
 
     def test_chat_prompt_builder_keeps_prompt_within_context_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
