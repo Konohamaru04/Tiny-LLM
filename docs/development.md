@@ -37,10 +37,13 @@ For the complete staged MoE curriculum with live telemetry:
 .\run_dash.bat
 ```
 
-The Windows launcher creates/activates `.venv`, installs unmet requirements,
-and opens the Gradio UI. The dashboard itself is a thin process controller: it
-launches the existing scripts, streams their combined output, tails the
-configured JSONL metrics, and never loads a second model copy.
+The Windows launcher creates/activates `.venv`, repairs CPU-only PyTorch
+installs from the official CUDA 13.0 wheel channel, verifies CUDA again after
+dependency installation, and opens the Gradio UI. It fails fast rather than
+silently starting long-context training on CPU. The dashboard itself is a thin
+process controller: it launches the existing scripts, streams their combined
+output, tails the configured JSONL metrics, and never loads a second model
+copy.
 
 The equivalent manual workflow is:
 

@@ -87,9 +87,21 @@ On Windows, double-click `run_dash.bat` or launch it from a terminal:
 ```
 
 The launcher switches to the repository directory, creates `.venv` if needed,
-activates it, installs any missing or incompatible packages from
-`requirements.txt`, and opens the dashboard in the default browser. Additional
-dashboard arguments are forwarded, for example:
+activates it, verifies that NVIDIA CUDA is usable, installs the official
+CUDA-enabled PyTorch wheel when necessary, installs any other missing or
+incompatible packages from `requirements.txt`, and opens the dashboard in the
+default browser. It refuses to start training with a CPU-only PyTorch build.
+The first CUDA installation is a large download.
+
+The default wheel channel is PyTorch CUDA 13.0. It can be overridden before
+launch when a different official PyTorch channel is required:
+
+```powershell
+$env:TINY_LLM_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu126"
+.\run_dash.bat
+```
+
+Additional dashboard arguments are forwarded, for example:
 
 ```powershell
 .\run_dash.bat --port 7861
