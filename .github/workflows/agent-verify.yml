@@ -1,0 +1,90 @@
+name: Agent Verify
+
+on:
+  push:
+    branches:
+      - agent/unified-checkpoint-thinking-tools
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install CPU test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.5.1"
+          python -m pip install sentencepiece numpy PyYAML tqdm aiofiles datasets pytest
+
+      - name: Compile Python sources
+        run: python -m compileall -q src scripts tests
+
+      - name: Run full test suite
+        run: python -m pytest -q
+
+      - name: MoE forward and backward smoke test
+        run: |
+          python - <<'PY'
+          import torch
+          from src.config import ModelConfig
+          from src.model import GPT
+
+          config = ModelConfig(
+              vocab_size=128,
+              block_size=64,
+              n_layer=2,
+              n_head=4,
+              n_embd=64,
+              mlp_ratio=2,
+              dropout=0.0,
+              tie_weights=True,
+              norm_type="rmsnorm",
+              mlp_type="swiglu",
+              positional_embedding="rope",
+              rope_theta=10000.0,
+              attention_impl="sdpa",
+              gradient_checkpointing=False,
+              moe_num_experts=4,
+              moe_top_k=2,
+              moe_every_n_layers=1,
+              moe_aux_loss_coef=0.01,
+              moe_router_jitter=0.0,
+          )
+          model = GPT(config)
+          input_ids = torch.randint(0, config.vocab_size, (2, 32))
+          logits, loss = model(input_ids, input_ids)
+          assert logits.shape == (2, 32, config.vocab_size)
+          assert loss is not None and torch.isfinite(loss)
+          loss.backward()
+          router_grads = [
+              parameter.grad
+              for name, parameter in model.named_parameters()
+              if "router" in name and parameter.requires_grad
+          ]
+          assert router_grads and all(gradient is not None for gradient in router_grads)
+          print({
+              "loss": float(loss.detach()),
+              "router_aux_loss": float(model.last_router_aux_loss),
+              "parameters": sum(parameter.numel() for parameter in model.parameters()),
+          })
+          PY
+
+      - name: Capability and long-horizon agent tests
+        run: python -m pytest -q tests/test_capabilities.py tests/test_moe.py
