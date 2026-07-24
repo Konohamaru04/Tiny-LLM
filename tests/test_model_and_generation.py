@@ -79,3 +79,35 @@ class ModelAndGenerationTests(unittest.TestCase):
             self.assertLessEqual(len(prompt), 39)
             self.assertEqual(prompt[0], tokenizer.bos_id)
             self.assertIn(tokenizer.token_to_id("<|json|>"), prompt)
+
+    def test_prompt_compaction_preserves_system_mode_and_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tokenizer = train_test_tokenizer(Path(tmp))
+            prompt = build_chat_prompt_tokens(
+                tokenizer=tokenizer,
+                system_prompt="Always obey the tool protocol.",
+                history=[("Old question " * 10, "Old response " * 10)],
+                user_message="Very old context " * 80 + "latest objective",
+                block_size=128,
+                max_history_turns=1,
+                thinking_mode="auto",
+                tools=[
+                    {
+                        "name": "calculator",
+                        "description": "Calculate",
+                        "parameters": {"type": "object", "properties": {}},
+                    }
+                ],
+            )
+
+            self.assertLessEqual(len(prompt), 127)
+            self.assertEqual(prompt[0], tokenizer.bos_id)
+            for token in (
+                "<|system|>",
+                "<|user|>",
+                "<|assistant|>",
+                "<|auto_think|>",
+                "<|tools|>",
+                "<|end_tools|>",
+            ):
+                self.assertIn(tokenizer.token_to_id(token), prompt)
