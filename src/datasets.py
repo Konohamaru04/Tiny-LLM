@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -45,11 +45,45 @@ class PretrainNpyDataset(Dataset):
         return torch.from_numpy(seq[:-1].copy()), torch.from_numpy(seq[1:].copy())
 
 
+class SFTBatchCollator:
+    """Right-pad only to the longest example in the current SFT batch."""
+
+    def __init__(self, pad_id: int):
+        self.pad_id = int(pad_id)
+
+    def __call__(
+        self,
+        batch: Sequence[Tuple[torch.Tensor, torch.Tensor]],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not batch:
+            raise ValueError("Cannot collate an empty SFT batch")
+        max_length = max(int(input_ids.numel()) for input_ids, _ in batch)
+        input_batch = torch.full(
+            (len(batch), max_length),
+            self.pad_id,
+            dtype=torch.long,
+        )
+        label_batch = torch.full(
+            (len(batch), max_length),
+            -100,
+            dtype=torch.long,
+        )
+        for row_index, (input_ids, labels) in enumerate(batch):
+            if input_ids.shape != labels.shape:
+                raise ValueError("SFT input and label shapes must match")
+            length = int(input_ids.numel())
+            input_batch[row_index, :length] = input_ids
+            label_batch[row_index, :length] = labels
+        return input_batch, label_batch
+
+
 class SFTJsonlDataset(Dataset):
-    """SFT data for one unified chat/reasoning/tool checkpoint.
+    """Variable-length SFT data for one chat/reasoning/tool checkpoint.
 
     Backward-compatible rows may use `assistant`. Capability rows may instead
     specify `thinking_mode`, `tools`, `thinking`, `tool_calls`, and `final`.
+    Sequences are truncated to the configured context but are not padded here;
+    `SFTBatchCollator` pads only to the longest sequence in each batch.
     """
 
     REQUIRED_KEYS = ("system", "user")
@@ -168,22 +202,17 @@ class SFTJsonlDataset(Dataset):
             full_seq = prefix_tokens[-keep_prefix:] + assistant_tokens
             assistant_start = len(full_seq) - len(assistant_tokens)
 
-        if len(full_seq) < self.max_seq_len:
-            full_seq.extend(
-                [self.tokenizer.pad_id] * (self.max_seq_len - len(full_seq))
-            )
-
         input_ids = full_seq[:-1]
         labels: List[int] = []
         for index in range(len(full_seq) - 1):
             target_index = index + 1
-            target_token = full_seq[target_index]
             labels.append(
-                -100
-                if target_token == self.tokenizer.pad_id or target_index < assistant_start
-                else target_token
+                -100 if target_index < assistant_start else full_seq[target_index]
             )
-        return torch.tensor(input_ids), torch.tensor(labels)
+        return (
+            torch.tensor(input_ids, dtype=torch.long),
+            torch.tensor(labels, dtype=torch.long),
+        )
 
     def __len__(self) -> int:
         return len(self.examples)
