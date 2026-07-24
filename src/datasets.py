@@ -8,6 +8,15 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from src.capabilities import (
+    END_THINK_TOKEN,
+    END_TOOL_CALL_TOKEN,
+    FINAL_TOKEN,
+    THINK_TOKEN,
+    TOOL_CALL_TOKEN,
+    ThinkingMode,
+    build_capability_prefix,
+)
 from src.tokenizer_utils import SentencePieceTokenizer
 from src.utils import assert_exists
 
@@ -17,7 +26,6 @@ class PretrainNpyDataset(Dataset):
         self.npy_path = assert_exists(npy_path, "Packed training array")
         self.block_size = int(block_size)
         self.data = np.load(self.npy_path, mmap_mode="r")
-
         if self.data.ndim != 2:
             raise ValueError(f"Expected a 2D array in {self.npy_path}, got shape {self.data.shape}")
         expected = self.block_size + 1
@@ -34,13 +42,17 @@ class PretrainNpyDataset(Dataset):
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         seq = np.asarray(self.data[index], dtype=np.int64)
-        x = torch.from_numpy(seq[:-1].copy())
-        y = torch.from_numpy(seq[1:].copy())
-        return x, y
+        return torch.from_numpy(seq[:-1].copy()), torch.from_numpy(seq[1:].copy())
 
 
 class SFTJsonlDataset(Dataset):
-    REQUIRED_KEYS = ("system", "user", "assistant")
+    """SFT data for one unified chat/reasoning/tool checkpoint.
+
+    Backward-compatible rows may use `assistant`. Capability rows may instead
+    specify `thinking_mode`, `tools`, `thinking`, `tool_calls`, and `final`.
+    """
+
+    REQUIRED_KEYS = ("system", "user")
 
     def __init__(
         self,
@@ -65,83 +77,113 @@ class SFTJsonlDataset(Dataset):
                     raise ValueError(
                         f"Malformed JSONL row in {self.jsonl_path} at line {line_no}: {exc}"
                     ) from exc
-
                 self.examples.append(self._build_example(row, line_no))
-
         if not self.examples:
             raise ValueError(f"No usable SFT examples found in {self.jsonl_path}")
 
     def _normalize_text(self, value: Any, key: str, line_no: int) -> str:
         if not isinstance(value, str):
             raise ValueError(
-                f"SFT row {line_no} in {self.jsonl_path} has non-string field '{key}': {type(value).__name__}"
+                f"SFT row {line_no} in {self.jsonl_path} has non-string field "
+                f"'{key}': {type(value).__name__}"
             )
         return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
     def _validate_row(self, row: Dict[str, Any], line_no: int) -> None:
         if not isinstance(row, dict):
-            raise ValueError(f"SFT row {line_no} in {self.jsonl_path} must be a JSON object.")
-        missing = [k for k in self.REQUIRED_KEYS if k not in row]
+            raise ValueError(f"SFT row {line_no} must be a JSON object")
+        missing = [key for key in self.REQUIRED_KEYS if key not in row]
         if missing:
+            raise ValueError(f"SFT row {line_no} is missing required fields: {missing}")
+        if "assistant" not in row and "final" not in row and "tool_calls" not in row:
             raise ValueError(
-                f"SFT row {line_no} in {self.jsonl_path} is missing required fields: {missing}"
+                f"SFT row {line_no} needs `assistant`, `final`, or `tool_calls`"
             )
 
     def _encode_role_text(self, role_token: str, text: str) -> List[int]:
-        chunk = f"{role_token}\n{text}\n"
-        return self.tokenizer.encode(chunk, add_bos=False, add_eos=False)
+        return self.tokenizer.encode(
+            f"{role_token}\n{text}\n", add_bos=False, add_eos=False
+        )
+
+    def _assistant_text(self, row: Dict[str, Any], line_no: int) -> str:
+        if "assistant" in row:
+            return self._normalize_text(row["assistant"], "assistant", line_no)
+
+        parts: list[str] = []
+        thinking = self._normalize_text(row.get("thinking", ""), "thinking", line_no)
+        if thinking:
+            parts.append(f"{THINK_TOKEN}\n{thinking}\n{END_THINK_TOKEN}")
+
+        tool_calls = row.get("tool_calls", [])
+        if not isinstance(tool_calls, list):
+            raise ValueError(f"SFT row {line_no} `tool_calls` must be a list")
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                raise ValueError(f"SFT row {line_no} tool call must be an object")
+            encoded = json.dumps(tool_call, ensure_ascii=False, separators=(",", ":"))
+            parts.append(f"{TOOL_CALL_TOKEN}\n{encoded}\n{END_TOOL_CALL_TOKEN}")
+
+        final = self._normalize_text(row.get("final", ""), "final", line_no)
+        if final:
+            parts.append(f"{FINAL_TOKEN}\n{final}")
+        return "\n".join(parts)
 
     def _build_example(self, row: Dict[str, Any], line_no: int) -> Tuple[torch.Tensor, torch.Tensor]:
         self._validate_row(row, line_no)
-
         system_text = self._normalize_text(row["system"], "system", line_no)
         user_text = self._normalize_text(row["user"], "user", line_no)
-        assistant_text = self._normalize_text(row["assistant"], "assistant", line_no)
+        assistant_text = self._assistant_text(row, line_no)
 
-        bos = [self.tokenizer.bos_id]
-        prefix_tokens = bos[:]
+        mode = row.get("thinking_mode", ThinkingMode.OFF.value)
+        tools = row.get("tools", [])
+        if not isinstance(tools, list):
+            raise ValueError(f"SFT row {line_no} `tools` must be a list")
 
+        prefix_tokens = [self.tokenizer.bos_id]
         if system_text:
             prefix_tokens.extend(self._encode_role_text("<|system|>", system_text))
-
         prefix_tokens.extend(self._encode_role_text("<|user|>", user_text))
-        prefix_tokens.extend(self.tokenizer.encode("<|assistant|>\n", add_bos=False, add_eos=False))
+        prefix_tokens.extend(
+            self.tokenizer.encode("<|assistant|>\n", add_bos=False, add_eos=False)
+        )
+        prefix_tokens.extend(
+            self.tokenizer.encode(
+                build_capability_prefix(mode, tools), add_bos=False, add_eos=False
+            )
+        )
 
-        assistant_tokens = self.tokenizer.encode(assistant_text, add_bos=False, add_eos=False)
+        assistant_tokens = self.tokenizer.encode(
+            assistant_text, add_bos=False, add_eos=False
+        )
         assistant_tokens.append(self.tokenizer.eos_id)
 
         if len(prefix_tokens) + len(assistant_tokens) <= self.max_seq_len:
             full_seq = prefix_tokens + assistant_tokens
             assistant_start = len(prefix_tokens)
+        elif len(assistant_tokens) >= self.max_seq_len:
+            full_seq = assistant_tokens[-self.max_seq_len :]
+            assistant_start = 0
         else:
-            if len(assistant_tokens) >= self.max_seq_len:
-                full_seq = assistant_tokens[-self.max_seq_len :]
-                assistant_start = 0
-            else:
-                keep_prefix = self.max_seq_len - len(assistant_tokens)
-                full_seq = prefix_tokens[-keep_prefix:] + assistant_tokens
-                assistant_start = len(full_seq) - len(assistant_tokens)
+            keep_prefix = self.max_seq_len - len(assistant_tokens)
+            full_seq = prefix_tokens[-keep_prefix:] + assistant_tokens
+            assistant_start = len(full_seq) - len(assistant_tokens)
 
         if len(full_seq) < self.max_seq_len:
-            pad_len = self.max_seq_len - len(full_seq)
-            full_seq.extend([self.tokenizer.pad_id] * pad_len)
+            full_seq.extend(
+                [self.tokenizer.pad_id] * (self.max_seq_len - len(full_seq))
+            )
 
         input_ids = full_seq[:-1]
         labels: List[int] = []
-
-        for i in range(len(full_seq) - 1):
-            target_index = i + 1
+        for index in range(len(full_seq) - 1):
+            target_index = index + 1
             target_token = full_seq[target_index]
-
-            if target_token == self.tokenizer.pad_id or target_index < assistant_start:
-                labels.append(-100)
-            else:
-                labels.append(target_token)
-
-        return (
-            torch.tensor(input_ids, dtype=torch.long),
-            torch.tensor(labels, dtype=torch.long),
-        )
+            labels.append(
+                -100
+                if target_token == self.tokenizer.pad_id or target_index < assistant_start
+                else target_token
+            )
+        return torch.tensor(input_ids), torch.tensor(labels)
 
     def __len__(self) -> int:
         return len(self.examples)
