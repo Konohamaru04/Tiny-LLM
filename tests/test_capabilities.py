@@ -56,6 +56,18 @@ def test_parse_reasoning_tool_call_and_final() -> None:
     assert parsed.tool_calls[0].arguments == {"expression": "2+2"}
 
 
+def test_parse_without_final_token_does_not_leak_hidden_sections() -> None:
+    text = (
+        f"{THINK_TOKEN}\nPrivate reasoning.\n{END_THINK_TOKEN}\n"
+        "Visible answer."
+    )
+    parsed = parse_assistant_response(text)
+    assert parsed.thinking == "Private reasoning."
+    assert parsed.final == "Visible answer."
+    assert THINK_TOKEN not in parsed.final
+    assert "Private reasoning" not in parsed.final
+
+
 def test_parse_tool_call_rejects_non_object_arguments() -> None:
     with pytest.raises(ValueError, match="arguments"):
         parse_tool_call('{"name":"x","arguments":[]}')
