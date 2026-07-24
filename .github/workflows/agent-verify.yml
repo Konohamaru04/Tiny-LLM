@@ -36,6 +36,29 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q src scripts tests
 
+      - name: Validate production configs
+        run: |
+          python - <<'PY'
+          from src.config import load_pretrain_config, load_sft_config, load_tokenizer_config
+
+          tokenizer = load_tokenizer_config("configs/tokenizer.yaml")
+          base = load_pretrain_config("configs/pretrain_tiny.yaml")
+          long_context = load_pretrain_config("configs/pretrain_long_context_16k.yaml")
+          sft = load_sft_config("configs/sft_tiny.yaml")
+
+          assert tokenizer.vocab_size == 4096
+          assert base.model.moe_num_experts == 4 and base.model.moe_top_k == 2
+          assert base.model.block_size == 4096
+          assert long_context.model.block_size == 16384
+          assert long_context.model.moe_num_experts == 4
+          assert sft.model.block_size == 16384
+          assert sft.training.pretrained_checkpoint.endswith("unified_moe_16k/best.pt")
+          print("production config validation passed")
+          PY
+
+      - name: Validate public dataset CLI imports
+        run: python scripts/prepare_public_datasets.py --help
+
       - name: Run full test suite
         run: python -m pytest -q
 
@@ -86,5 +109,12 @@ jobs:
           })
           PY
 
-      - name: Capability and long-horizon agent tests
-        run: python -m pytest -q tests/test_capabilities.py tests/test_moe.py
+      - name: Capability, checkpoint, and agent tests
+        run: |
+          python -m pytest -q \
+            tests/test_capabilities.py \
+            tests/test_moe.py \
+            tests/test_checkpoint_compat.py \
+            tests/test_agent_runtime.py \
+            tests/test_sft_dataset.py \
+            tests/test_model_and_generation.py
