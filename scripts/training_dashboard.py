@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import inspect
 import json
 import os
 import subprocess
@@ -955,6 +956,45 @@ footer { display: none !important; }
 """
 
 
+def dashboard_theme() -> gr.Theme:
+    return gr.themes.Soft(
+        primary_hue="indigo",
+        secondary_hue="cyan",
+        neutral_hue="slate",
+    )
+
+
+def _supports_parameter(function: Any, parameter: str) -> bool:
+    return parameter in inspect.signature(function).parameters
+
+
+def _private_event_options(event_listener: Any) -> dict[str, Any]:
+    if _supports_parameter(event_listener, "api_visibility"):
+        return {"api_visibility": "private"}
+    return {"api_name": False}
+
+
+def _blocks_options() -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "title": "Tiny-LLM · MoE Training Control Center",
+        "fill_width": True,
+    }
+    if _supports_parameter(gr.Blocks, "theme"):
+        options.update(theme=dashboard_theme(), css=DASHBOARD_CSS)
+    return options
+
+
+def _launch_options(demo: gr.Blocks) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    if _supports_parameter(demo.launch, "theme"):
+        options.update(theme=dashboard_theme(), css=DASHBOARD_CSS)
+    if _supports_parameter(demo.launch, "show_api"):
+        options["show_api"] = False
+    elif _supports_parameter(demo.launch, "footer_links"):
+        options["footer_links"] = []
+    return options
+
+
 def build_app(controller: TrainingController | None = None) -> gr.Blocks:
     controller = controller or TrainingController(ROOT)
     training_stages = list(load_training_stages(controller.root).values())
@@ -967,17 +1007,7 @@ def build_app(controller: TrainingController | None = None) -> gr.Blocks:
     )
     initial = dashboard_snapshot(controller, training_stages, initial_preview)
 
-    theme = gr.themes.Soft(
-        primary_hue="indigo",
-        secondary_hue="cyan",
-        neutral_hue="slate",
-    )
-    with gr.Blocks(
-        title="Tiny-LLM · MoE Training Control Center",
-        theme=theme,
-        css=DASHBOARD_CSS,
-        fill_width=True,
-    ) as demo:
+    with gr.Blocks(**_blocks_options()) as demo:
         gr.HTML(
             """
             <section id="hero">
@@ -1123,16 +1153,14 @@ def build_app(controller: TrainingController | None = None) -> gr.Blocks:
             outputs=action_notice,
             queue=False,
             show_progress="hidden",
-            api_name=False,
-            show_api=False,
+            **_private_event_options(start_button.click),
         )
         stop_button.click(
             fn=stop_pipeline,
             outputs=action_notice,
             queue=False,
             show_progress="hidden",
-            api_name=False,
-            show_api=False,
+            **_private_event_options(stop_button.click),
         )
 
         timer = gr.Timer(1.0)
@@ -1151,8 +1179,7 @@ def build_app(controller: TrainingController | None = None) -> gr.Blocks:
             ),
             queue=False,
             show_progress="hidden",
-            api_name=False,
-            show_api=False,
+            **_private_event_options(timer.tick),
         )
 
     return demo
@@ -1186,12 +1213,12 @@ def main() -> None:
         server_port=args.port,
         share=args.share,
         inbrowser=args.inbrowser,
-        show_api=False,
         show_error=True,
         blocked_paths=[
             str((ROOT / "data").resolve()),
             str((ROOT / "checkpoints").resolve()),
         ],
+        **_launch_options(demo),
     )
 
 

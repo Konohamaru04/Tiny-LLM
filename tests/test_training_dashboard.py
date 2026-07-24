@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import sys
 import tempfile
 import time
@@ -11,6 +12,9 @@ from scripts.training_dashboard import (
     ROOT,
     Stage,
     TrainingController,
+    _blocks_options,
+    _launch_options,
+    _private_event_options,
     build_app,
     read_metrics_file,
     training_command,
@@ -91,6 +95,22 @@ class TrainingDashboardTests(unittest.TestCase):
         self.assertEqual(config["mode"], "blocks")
         self.assertGreater(len(config["components"]), 20)
         self.assertEqual(controller.snapshot()["status"], "idle")
+
+    def test_gradio_compatibility_options_match_installed_api(self) -> None:
+        import gradio as gr
+
+        app = build_app(TrainingController(ROOT))
+        block_options = _blocks_options()
+        launch_options = _launch_options(app)
+        event_options = _private_event_options(gr.Button.click)
+        event_parameters = inspect.signature(gr.Button.click).parameters
+
+        self.assertIn("css", block_options.keys() | launch_options.keys())
+        self.assertNotIn("show_api", event_options)
+        if "api_visibility" in event_parameters:
+            self.assertEqual(event_options, {"api_visibility": "private"})
+        else:
+            self.assertEqual(event_options, {"api_name": False})
 
 
 if __name__ == "__main__":
