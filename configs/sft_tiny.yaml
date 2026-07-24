@@ -1,53 +1,54 @@
 model:
-  vocab_size: 2865
-  block_size: 1024
+  vocab_size: 4096
+  block_size: 4096
   n_layer: 8
   n_head: 6
   n_embd: 384
   mlp_ratio: 4
   dropout: 0.05
   tie_weights: true
-  norm_type: layernorm
-  mlp_type: gelu
-  positional_embedding: learned
-  rope_theta: 10000.0
-  attention_impl: auto
-  gradient_checkpointing: false
+  norm_type: rmsnorm
+  mlp_type: swiglu
+  positional_embedding: rope
+  rope_theta: 1000000.0
+  attention_impl: sdpa
+  gradient_checkpointing: true
 
 data:
   tokenizer_model_path: data/processed/tokenizer.model
-  train_jsonl_path: data/sft/sample_train.jsonl
-  val_jsonl_path: data/sft/sample_val.jsonl
+  train_jsonl_path: data/sft/unified_train.jsonl
+  val_jsonl_path: data/sft/unified_val.jsonl
 
 training:
-  output_dir: checkpoints/sft_tiny
-  pretrained_checkpoint: checkpoints/pretrain_tiny/best.pt
+  # This stage writes the final single checkpoint used by all modes.
+  output_dir: checkpoints/unified_moe_sft
+  pretrained_checkpoint: checkpoints/unified_moe/best.pt
   seed: 0
   batch_size: 1
-  gradient_accumulation_steps: 16
-  learning_rate: 1.0e-4
-  min_lr: 1.0e-5
-  warmup_steps: 200
-  max_steps: 12000
+  gradient_accumulation_steps: 32
+  learning_rate: 8.0e-5
+  min_lr: 8.0e-6
+  warmup_steps: 300
+  max_steps: 16000
   num_workers: 0
   weight_decay: 0.05
   grad_clip: 1.0
-  eval_interval: 600
-  eval_steps: 100
-  save_interval: 1000
+  eval_interval: 500
+  eval_steps: 50
+  save_interval: 500
   log_interval: 10
-  patience: 10
+  patience: 20
   use_amp: true
   resume_from: ""
-  metrics_jsonl_path: checkpoints/sft_tiny/metrics.jsonl
-  metrics_csv_path: checkpoints/sft_tiny/metrics.csv
+  metrics_jsonl_path: checkpoints/unified_moe_sft/metrics.jsonl
+  metrics_csv_path: checkpoints/unified_moe_sft/metrics.csv
   sample_prompts_path: configs/eval_prompts.jsonl
-  sample_output_dir: checkpoints/sft_tiny/sample_generations
-  sample_system_prompt: You are a practical technical assistant who explains things clearly.
+  sample_output_dir: checkpoints/unified_moe_sft/sample_generations
+  sample_system_prompt: You are a practical assistant that can reason, plan, and use tools.
   sample_max_history_turns: 0
   sample_temperature: 0.4
   sample_top_k: 80
-  sample_max_new_tokens: 160
+  sample_max_new_tokens: 384
   sample_repetition_penalty: 1.05
   sample_json_mode: false
   compile_model: false
