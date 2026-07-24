@@ -13,6 +13,11 @@ model:
   rope_theta: 1000000.0
   attention_impl: sdpa
   gradient_checkpointing: true
+  moe_num_experts: 4
+  moe_top_k: 2
+  moe_every_n_layers: 1
+  moe_aux_loss_coef: 0.01
+  moe_router_jitter: 0.01
 
 data:
   tokenizer_model_path: data/processed/tokenizer.model
@@ -40,9 +45,8 @@ training:
   log_interval: 5
   patience: 20
   use_amp: true
-  # Continue from the 4K unified base checkpoint. The training script restores
-  # optimizer state when compatible; use a model-only warm start if repacking
-  # or optimizer shapes differ in a future implementation.
+  # The training script detects this context-only architecture change and
+  # performs a model-only warm start instead of restoring optimizer state.
   resume_from: checkpoints/unified_moe/latest.pt
   metrics_jsonl_path: checkpoints/unified_moe_16k/metrics.jsonl
   metrics_csv_path: checkpoints/unified_moe_16k/metrics.csv
