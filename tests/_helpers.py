@@ -22,7 +22,9 @@ def write_markdown_docs(root: Path, docs: Iterable[str] | None = None) -> Path:
     return raw_dir
 
 
-def train_test_tokenizer(root: Path, vocab_size: int = 48) -> SentencePieceTokenizer:
+def train_test_tokenizer(root: Path, vocab_size: int = 96) -> SentencePieceTokenizer:
+    """Train a compact fixture tokenizer with room for all capability tokens."""
+
     corpus_path = root / "corpus.txt"
     corpus_path.write_text("\n".join(SAMPLE_DOCS), encoding="utf-8")
     model_prefix = root / "tokenizer"
