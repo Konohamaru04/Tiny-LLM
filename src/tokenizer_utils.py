@@ -5,16 +5,18 @@ from typing import Iterable, List, Sequence
 
 import sentencepiece as spm
 
+from src.capabilities import CAPABILITY_TOKENS
 from src.utils import assert_exists, ensure_parent_dir, resolve_path
 
 
-REQUIRED_USER_DEFINED_SYMBOLS = [
+CHAT_USER_DEFINED_SYMBOLS = [
     "<|system|>",
     "<|user|>",
     "<|assistant|>",
     "<|json|>",
     "</json>",
 ]
+REQUIRED_USER_DEFINED_SYMBOLS = CHAT_USER_DEFINED_SYMBOLS + list(CAPABILITY_TOKENS)
 
 
 class SentencePieceTokenizer:
@@ -23,9 +25,13 @@ class SentencePieceTokenizer:
         self.sp = spm.SentencePieceProcessor(model_file=str(self.model_path))
         self._verify_required_tokens()
 
+    def _has_exact_piece(self, token: str) -> bool:
+        token_id = int(self.sp.piece_to_id(token))
+        return token_id >= 0 and self.sp.id_to_piece(token_id) == token
+
     def _verify_required_tokens(self) -> None:
         required = ["<pad>", "<bos>", "<eos>", "<unk>"] + REQUIRED_USER_DEFINED_SYMBOLS
-        missing = [tok for tok in required if self.sp.piece_to_id(tok) < 0]
+        missing = [token for token in required if not self._has_exact_piece(token)]
         if missing:
             raise ValueError(
                 f"Tokenizer is missing required special tokens: {missing}. "
@@ -54,7 +60,7 @@ class SentencePieceTokenizer:
 
     def token_to_id(self, token: str) -> int:
         token_id = int(self.sp.piece_to_id(token))
-        if token_id < 0:
+        if token_id < 0 or self.sp.id_to_piece(token_id) != token:
             raise ValueError(f"Token not found in tokenizer vocabulary: {token}")
         return token_id
 
@@ -64,10 +70,10 @@ class SentencePieceTokenizer:
         return list(self.sp.encode(text, out_type=int, add_bos=add_bos, add_eos=add_eos))
 
     def decode(self, token_ids: Sequence[int], skip_basic_special_tokens: bool = True) -> str:
-        ids = [int(t) for t in token_ids if int(t) >= 0]
+        ids = [int(token) for token in token_ids if int(token) >= 0]
         if skip_basic_special_tokens:
             basic = {self.pad_id, self.bos_id, self.eos_id}
-            ids = [t for t in ids if t not in basic]
+            ids = [token for token in ids if token not in basic]
         return self.sp.decode(ids)
 
     def get_special_token_map(self) -> dict[str, int]:
@@ -77,8 +83,8 @@ class SentencePieceTokenizer:
             "<eos>": self.eos_id,
             "<unk>": self.unk_id,
         }
-        for tok in REQUIRED_USER_DEFINED_SYMBOLS:
-            mapping[tok] = self.token_to_id(tok)
+        for token in REQUIRED_USER_DEFINED_SYMBOLS:
+            mapping[token] = self.token_to_id(token)
         return mapping
 
 
@@ -128,16 +134,10 @@ def train_sentencepiece_tokenizer(
     }
 
     command = " ".join(f"--{key}={value}" for key, value in cmd_parts.items())
-    spm.SentencePieceTrainer.train(command)
+    spm.SentencePieceTrainer.Train(command)
 
-    model_path = output_prefix.with_suffix(".model")
-    vocab_path = output_prefix.with_suffix(".vocab")
-
-    if not model_path.exists() or not vocab_path.exists():
-        raise RuntimeError(
-            f"SentencePiece training did not create expected files:\n"
-            f"  {model_path}\n"
-            f"  {vocab_path}"
-        )
-
+    model_path = Path(f"{output_prefix}.model")
+    vocab_path = Path(f"{output_prefix}.vocab")
+    assert_exists(model_path, "Trained tokenizer model")
+    assert_exists(vocab_path, "Trained tokenizer vocabulary")
     return model_path, vocab_path
