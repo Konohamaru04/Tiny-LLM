@@ -59,10 +59,45 @@ jobs:
       - name: Validate public dataset CLI imports
         run: python scripts/prepare_public_datasets.py --help
 
-      - name: Run full test suite
-        run: python -m pytest -q
+      - name: Core pipeline tests
+        id: core_tests
+        continue-on-error: true
+        run: |
+          python -m pytest -q \
+            tests/test_config.py \
+            tests/test_data_pipeline.py \
+            tests/test_evaluation.py \
+            tests/test_dataset_generation.py \
+            tests/test_trainer.py \
+            tests/test_chat_runtime.py
+
+      - name: Tokenizer and generation tests
+        id: generation_tests
+        continue-on-error: true
+        run: python -m pytest -q tests/test_model_and_generation.py
+
+      - name: SFT dataset tests
+        id: sft_tests
+        continue-on-error: true
+        run: python -m pytest -q tests/test_sft_dataset.py
+
+      - name: Capability and agent tests
+        id: agent_tests
+        continue-on-error: true
+        run: |
+          python -m pytest -q \
+            tests/test_capabilities.py \
+            tests/test_checkpoint_compat.py \
+            tests/test_agent_runtime.py
+
+      - name: MoE tests
+        id: moe_tests
+        continue-on-error: true
+        run: python -m pytest -q tests/test_moe.py
 
       - name: MoE forward and backward smoke test
+        id: moe_smoke
+        continue-on-error: true
         run: |
           python - <<'PY'
           import torch
@@ -109,12 +144,12 @@ jobs:
           })
           PY
 
-      - name: Capability, checkpoint, and agent tests
+      - name: Fail on any verification error
+        if: always()
         run: |
-          python -m pytest -q \
-            tests/test_capabilities.py \
-            tests/test_moe.py \
-            tests/test_checkpoint_compat.py \
-            tests/test_agent_runtime.py \
-            tests/test_sft_dataset.py \
-            tests/test_model_and_generation.py
+          test "${{ steps.core_tests.outcome }}" = "success"
+          test "${{ steps.generation_tests.outcome }}" = "success"
+          test "${{ steps.sft_tests.outcome }}" = "success"
+          test "${{ steps.agent_tests.outcome }}" = "success"
+          test "${{ steps.moe_tests.outcome }}" = "success"
+          test "${{ steps.moe_smoke.outcome }}" = "success"
