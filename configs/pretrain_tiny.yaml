@@ -10,10 +10,14 @@ model:
   norm_type: rmsnorm
   mlp_type: swiglu
   positional_embedding: rope
-  # Higher RoPE base for stable extension beyond the old 1K learned context.
   rope_theta: 1000000.0
   attention_impl: sdpa
   gradient_checkpointing: true
+  moe_num_experts: 4
+  moe_top_k: 2
+  moe_every_n_layers: 1
+  moe_aux_loss_coef: 0.01
+  moe_router_jitter: 0.01
 
 data:
   tokenizer_model_path: data/processed/tokenizer.model
