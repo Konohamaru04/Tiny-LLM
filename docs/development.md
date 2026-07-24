@@ -34,12 +34,13 @@ The tests cover:
 For the complete staged MoE curriculum with live telemetry:
 
 ```powershell
-python scripts/training_dashboard.py --inbrowser
+.\run_dash.bat
 ```
 
-The dashboard is a thin process controller: it launches the existing scripts,
-streams their combined output, tails the configured JSONL metrics, and never
-loads a second model copy.
+The Windows launcher creates/activates `.venv`, installs unmet requirements,
+and opens the Gradio UI. The dashboard itself is a thin process controller: it
+launches the existing scripts, streams their combined output, tails the
+configured JSONL metrics, and never loads a second model copy.
 
 The equivalent manual workflow is:
 

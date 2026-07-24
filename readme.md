@@ -80,7 +80,23 @@ python -c "import torch; print(torch.__version__); print('cuda=', torch.cuda.is_
 
 ## One-click training dashboard
 
-Launch the unified local control center:
+On Windows, double-click `run_dash.bat` or launch it from a terminal:
+
+```powershell
+.\run_dash.bat
+```
+
+The launcher switches to the repository directory, creates `.venv` if needed,
+activates it, installs any missing or incompatible packages from
+`requirements.txt`, and opens the dashboard in the default browser. Additional
+dashboard arguments are forwarded, for example:
+
+```powershell
+.\run_dash.bat --port 7861
+```
+
+To launch the unified local control center directly with an already-prepared
+environment:
 
 ```powershell
 python scripts/training_dashboard.py --inbrowser
