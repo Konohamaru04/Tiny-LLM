@@ -72,7 +72,7 @@ class ChatRuntimeTests(unittest.TestCase):
             end_json = tokenizer.token_to_id("</json>")
             model_cfg = ModelConfig(
                 vocab_size=tokenizer.vocab_size,
-                block_size=32,
+                block_size=128,
                 n_layer=1,
                 n_head=2,
                 n_embd=16,
