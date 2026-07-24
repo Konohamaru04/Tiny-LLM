@@ -58,12 +58,11 @@ class AgentState:
 
 
 class LongHorizonAgent:
-    """Iterative tool-use runtime for long-horizon tasks.
+    """Iterative, resumable tool-use runtime for long-horizon tasks.
 
-    The model is repeatedly called with compacted prior observations. State is
-    persisted after every step so interrupted tasks can resume. This runtime
-    supplies orchestration; actual long-horizon quality still depends on the
-    unified checkpoint being trained on multi-step trajectories.
+    The runtime keeps the objective stable, feeds tool results back using the
+    same protocol used during SFT, and retains only a configurable recent trace
+    in the active prompt. The complete trajectory remains persisted on disk.
     """
 
     def __init__(
@@ -84,10 +83,25 @@ class LongHorizonAgent:
         temperature: float = 0.3,
         top_k: int = 50,
         repetition_penalty: float = 1.05,
+        trace_window_steps: int = 8,
         state_path: str | Path = "runs/agent_state.json",
     ):
         if max_steps <= 0:
             raise ValueError("max_steps must be > 0")
+        if max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must be > 0")
+        if trace_window_steps <= 0:
+            raise ValueError("trace_window_steps must be > 0")
+
+        tool_names = {tool.name for tool in tools}
+        if len(tool_names) != len(tools):
+            raise ValueError("Tool definitions must have unique names")
+        missing_handlers = sorted(tool_names - set(handlers))
+        if missing_handlers:
+            raise ValueError(
+                "Missing handlers for tools: " + ", ".join(missing_handlers)
+            )
+
         self.model = model
         self.tokenizer = tokenizer
         self.model_config = model_config
@@ -100,31 +114,38 @@ class LongHorizonAgent:
         self.temperature = temperature
         self.top_k = top_k
         self.repetition_penalty = repetition_penalty
+        self.trace_window_steps = trace_window_steps
         self.state_path = Path(state_path)
-        validate_tool_calls([], self.handlers)
 
     def _decode(self, prompt_tokens: list[int], output_ids: torch.Tensor) -> str:
         generated = output_ids[0, len(prompt_tokens) :].tolist()
         return self.tokenizer.decode(generated).strip()
 
     def _compact_trace(self, state: AgentState) -> str:
-        if not state.steps:
-            return state.objective
         blocks = [f"OBJECTIVE:\n{state.objective}"]
-        for step in state.steps:
+        recent_steps = state.steps[-self.trace_window_steps :]
+
+        if len(state.steps) > len(recent_steps):
+            blocks.append(
+                f"EARLIER PROGRESS:\n{len(state.steps) - len(recent_steps)} completed "
+                "steps are stored in the persisted task state."
+            )
+
+        for step in recent_steps:
             blocks.append(f"STEP {step.index} MODEL OUTPUT:\n{step.model_output}")
-            if step.tool_results:
-                blocks.append(
-                    "OBSERVATIONS:\n"
-                    + "\n".join(
-                        json.dumps(result, ensure_ascii=False)
-                        for result in step.tool_results
-                    )
-                )
-        blocks.append(
-            "Continue from the observations above. Use another tool call or emit "
-            "<|final|> followed by the completed answer."
-        )
+            formatted_results = [
+                str(result.get("formatted", "")).strip()
+                for result in step.tool_results
+                if str(result.get("formatted", "")).strip()
+            ]
+            if formatted_results:
+                blocks.append("TOOL RESULTS:\n" + "\n".join(formatted_results))
+
+        if state.steps:
+            blocks.append(
+                "Continue from the tool results above. Emit another structured tool "
+                "call when work remains, or emit <|final|> followed by the completed answer."
+            )
         return "\n\n".join(blocks)
 
     def _run_model(self, user_message: str) -> ParsedAssistantResponse:
@@ -151,13 +172,21 @@ class LongHorizonAgent:
         return parse_assistant_response(self._decode(prompt_tokens, output_ids))
 
     def run(self, objective: str, *, resume: bool = False) -> AgentState:
-        state = (
-            AgentState.load(self.state_path)
-            if resume and self.state_path.exists()
-            else AgentState(objective=objective.strip())
-        )
-        if not state.objective:
+        normalized_objective = objective.strip()
+        if not normalized_objective:
             raise ValueError("objective must not be empty")
+
+        if resume and self.state_path.exists():
+            state = AgentState.load(self.state_path)
+            if state.objective != normalized_objective:
+                raise ValueError(
+                    "Resume objective does not match the persisted agent objective"
+                )
+            if state.status == "completed":
+                return state
+            state.status = "running"
+        else:
+            state = AgentState(objective=normalized_objective)
 
         for step_index in range(len(state.steps) + 1, self.max_steps + 1):
             prompt = self._compact_trace(state)
@@ -178,12 +207,24 @@ class LongHorizonAgent:
             for call in parsed.tool_calls:
                 try:
                     value = self.handlers[call.name](call.arguments)
-                    result = {"name": call.name, "id": call.call_id, "ok": True, "result": value}
-                except Exception as exc:  # Tool failures become observations for recovery.
-                    result = {"name": call.name, "id": call.call_id, "ok": False, "error": str(exc)}
+                    result = {
+                        "name": call.name,
+                        "id": call.call_id,
+                        "ok": True,
+                        "result": value,
+                    }
+                    protocol_value: Any = value
+                except Exception as exc:
+                    result = {
+                        "name": call.name,
+                        "id": call.call_id,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                    protocol_value = {"ok": False, "error": str(exc)}
                 result["formatted"] = format_tool_result(
                     call.name,
-                    result.get("result", result.get("error")),
+                    protocol_value,
                     call.call_id,
                 )
                 step.tool_results.append(result)
