@@ -126,6 +126,22 @@ def _extract_sections(text: str, start: str, end: str) -> list[str]:
     return sections
 
 
+def _remove_sections(text: str, start: str, end: str) -> str:
+    output = text
+    cursor = 0
+    while True:
+        start_index = output.find(start, cursor)
+        if start_index < 0:
+            break
+        end_index = output.find(end, start_index + len(start))
+        if end_index < 0:
+            output = output[:start_index]
+            break
+        output = output[:start_index] + output[end_index + len(end) :]
+        cursor = start_index
+    return output
+
+
 def parse_tool_call(payload: str) -> ToolCall:
     value = json.loads(payload)
     if not isinstance(value, dict):
@@ -150,13 +166,9 @@ def parse_assistant_response(text: str) -> ParsedAssistantResponse:
     if final_index >= 0:
         final = raw[final_index + len(FINAL_TOKEN) :].strip()
     else:
-        final = raw
-        for start, end in (
-            (THINK_TOKEN, END_THINK_TOKEN),
-            (TOOL_CALL_TOKEN, END_TOOL_CALL_TOKEN),
-        ):
-            for section in _extract_sections(final, start, end):
-                final = final.replace(f"{start}{section}{end}", "")
+        final = _remove_sections(raw, THINK_TOKEN, END_THINK_TOKEN)
+        final = _remove_sections(final, TOOL_CALL_TOKEN, END_TOOL_CALL_TOKEN)
+        final = final.replace(NO_THINK_TOKEN, "").replace(AUTO_THINK_TOKEN, "")
         final = final.strip()
 
     return ParsedAssistantResponse(
