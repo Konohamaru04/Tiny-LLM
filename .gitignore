@@ -35,6 +35,10 @@ data/processed/*
 data/sft/*.jsonl
 data/sft/dataset_summary.json
 
+data/public_sft/*
+!data/public_sft/.gitkeep
+!data/public_sft/manifest.json
+
 checkpoints/*
 !checkpoints/.gitkeep
 

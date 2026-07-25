@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -9,9 +9,20 @@ from typing import Callable, Iterable
 import torch
 
 from src.config import ChatConfig, ModelConfig
-from src.generation import build_chat_prompt_tokens, generate, generate_stream
+from src.chat_format import legacy_turns_to_messages
+from src.generation import (
+    build_chat_prompt_tokens,
+    build_messages_prompt_tokens,
+    generate,
+    generate_stream,
+)
 from src.model import GPT
 from src.tokenizer_utils import SentencePieceTokenizer
+from src.tools import (
+    ParsedToolCall,
+    ToolRegistry,
+    parse_assistant_response,
+)
 from src.utils import (
     assert_exists,
     ensure_parent_dir,
@@ -30,6 +41,21 @@ class Persona:
     system_prompt: str
     description: str = ""
     json_mode: bool = False
+
+
+@dataclass(frozen=True)
+class ToolEvent:
+    call: ParsedToolCall
+    output: dict
+
+
+@dataclass
+class AgentTurnResult:
+    response: str
+    tool_events: list[ToolEvent] = field(default_factory=list)
+    reached_tool_limit: bool = False
+    reasoning: str = ""
+    raw_response: str = ""
 
 
 def load_personas(path: str | Path) -> dict[str, Persona]:
@@ -137,10 +163,13 @@ def strip_hidden_stop_tokens(tokenizer: SentencePieceTokenizer, token_ids: list[
         tokenizer.eos_id,
         tokenizer.pad_id,
         tokenizer.token_to_id("<|system|>"),
+        tokenizer.token_to_id("<|developer|>"),
         tokenizer.token_to_id("<|user|>"),
         tokenizer.token_to_id("<|assistant|>"),
         tokenizer.token_to_id("<|json|>"),
         tokenizer.token_to_id("</json>"),
+        tokenizer.token_to_id("<|tool_response|>"),
+        tokenizer.token_to_id("</|tool_response|>"),
     }
     out = list(token_ids)
     while out and out[-1] in hidden:
@@ -152,8 +181,10 @@ def build_stop_ids(tokenizer: SentencePieceTokenizer, json_mode: bool) -> list[i
     stop_ids = [
         tokenizer.eos_id,
         tokenizer.token_to_id("<|system|>"),
+        tokenizer.token_to_id("<|developer|>"),
         tokenizer.token_to_id("<|user|>"),
         tokenizer.token_to_id("<|assistant|>"),
+        tokenizer.token_to_id("<|tool_response|>"),
     ]
     if json_mode:
         stop_ids.append(tokenizer.token_to_id("</json>"))
@@ -176,6 +207,8 @@ def generate_chat_response(
     max_new_tokens: int,
     repetition_penalty: float,
     on_text_chunk: Callable[[str], None] | None = None,
+    tools: list[dict] | None = None,
+    thinking_mode: bool = False,
 ) -> str:
     prompt_tokens = build_chat_prompt_tokens(
         tokenizer=tokenizer,
@@ -184,10 +217,48 @@ def generate_chat_response(
         user_message=user_message,
         block_size=model_cfg.block_size,
         max_history_turns=max_history_turns,
+        max_new_tokens=max_new_tokens,
         json_mode=json_mode,
+        tools=tools,
+        thinking_mode=thinking_mode,
     )
+    effective_callback = None if thinking_mode else on_text_chunk
+    raw_response = _generate_from_prompt(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        prompt_tokens=prompt_tokens,
+        json_mode=json_mode,
+        thinking_mode=thinking_mode,
+        temperature=temperature,
+        top_k=top_k,
+        max_new_tokens=max_new_tokens,
+        repetition_penalty=repetition_penalty,
+        on_text_chunk=effective_callback,
+    )
+    visible_response = parse_assistant_response(raw_response).final
+    if thinking_mode and on_text_chunk is not None and visible_response:
+        on_text_chunk(visible_response)
+    return visible_response
+
+
+def _generate_from_prompt(
+    model: torch.nn.Module,
+    tokenizer: SentencePieceTokenizer,
+    device: torch.device,
+    prompt_tokens: list[int],
+    *,
+    json_mode: bool,
+    thinking_mode: bool,
+    temperature: float,
+    top_k: int,
+    max_new_tokens: int,
+    repetition_penalty: float,
+    on_text_chunk: Callable[[str], None] | None,
+) -> str:
     input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
     stop_ids = build_stop_ids(tokenizer, json_mode=json_mode)
+    response_prefix = "<|think|>\n" if thinking_mode else "<|final|>\n"
 
     if on_text_chunk is None:
         output_ids = generate(
@@ -201,10 +272,13 @@ def generate_chat_response(
         )
         generated_ids = output_ids[0, input_ids.shape[1] :].tolist()
         generated_ids = strip_hidden_stop_tokens(tokenizer, generated_ids)
-        return tokenizer.decode(generated_ids).strip()
+        return (response_prefix + tokenizer.decode(generated_ids)).strip()
 
     generated_ids: list[int] = []
-    rendered_text = ""
+    # The control prefix belongs in the model transcript, not in user-visible
+    # streaming output. `generate_chat_response` parses it from the returned
+    # raw response after generation.
+    rendered_text = response_prefix
     for next_token in generate_stream(
         model=model,
         input_ids=input_ids,
@@ -215,7 +289,9 @@ def generate_chat_response(
         stop_token_ids=stop_ids,
     ):
         generated_ids.extend(next_token[0].tolist())
-        decoded = tokenizer.decode(strip_hidden_stop_tokens(tokenizer, generated_ids)).strip()
+        decoded = (response_prefix + tokenizer.decode(
+            strip_hidden_stop_tokens(tokenizer, generated_ids)
+        )).strip()
         if decoded.startswith(rendered_text):
             delta = decoded[len(rendered_text) :]
         else:
@@ -224,7 +300,141 @@ def generate_chat_response(
             on_text_chunk(delta)
         rendered_text = decoded
 
-    return tokenizer.decode(strip_hidden_stop_tokens(tokenizer, generated_ids)).strip()
+    return (response_prefix + tokenizer.decode(
+        strip_hidden_stop_tokens(tokenizer, generated_ids)
+    )).strip()
+
+
+def generate_messages_response(
+    model: torch.nn.Module,
+    tokenizer: SentencePieceTokenizer,
+    model_cfg: ModelConfig,
+    device: torch.device,
+    messages: list[dict],
+    *,
+    tools: list[dict] | None,
+    json_mode: bool,
+    thinking_mode: bool,
+    temperature: float,
+    top_k: int,
+    max_new_tokens: int,
+    repetition_penalty: float,
+    on_text_chunk: Callable[[str], None] | None = None,
+) -> str:
+    prompt_tokens = build_messages_prompt_tokens(
+        tokenizer,
+        messages,
+        model_cfg.block_size,
+        max_new_tokens=max_new_tokens,
+        tools=tools,
+        json_mode=json_mode,
+        thinking_mode=thinking_mode,
+    )
+    return _generate_from_prompt(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        prompt_tokens=prompt_tokens,
+        json_mode=json_mode,
+        thinking_mode=thinking_mode,
+        temperature=temperature,
+        top_k=top_k,
+        max_new_tokens=max_new_tokens,
+        repetition_penalty=repetition_penalty,
+        on_text_chunk=on_text_chunk,
+    )
+
+
+def run_agent_turn(
+    model: torch.nn.Module,
+    tokenizer: SentencePieceTokenizer,
+    model_cfg: ModelConfig,
+    device: torch.device,
+    system_prompt: str,
+    history: list[tuple[str, str]],
+    user_message: str,
+    *,
+    max_history_turns: int,
+    registry: ToolRegistry,
+    max_tool_rounds: int,
+    json_mode: bool,
+    thinking_mode: bool,
+    temperature: float,
+    top_k: int,
+    max_new_tokens: int,
+    repetition_penalty: float,
+) -> AgentTurnResult:
+    selected_history = history[-max_history_turns:] if max_history_turns > 0 else []
+    messages = legacy_turns_to_messages(system_prompt, selected_history, user_message)
+    schemas = registry.schemas()
+    events: list[ToolEvent] = []
+    response = ""
+    raw_response = ""
+    reasoning_parts: list[str] = []
+
+    for tool_round in range(max_tool_rounds + 1):
+        raw_response = generate_messages_response(
+            model=model,
+            tokenizer=tokenizer,
+            model_cfg=model_cfg,
+            device=device,
+            messages=messages,
+            tools=schemas,
+            json_mode=json_mode,
+            thinking_mode=thinking_mode,
+            temperature=temperature,
+            top_k=top_k,
+            max_new_tokens=max_new_tokens,
+            repetition_penalty=repetition_penalty,
+        )
+        parsed = parse_assistant_response(raw_response)
+        response = parsed.final
+        calls = list(parsed.tool_calls)
+        if parsed.reasoning:
+            reasoning_parts.append(parsed.reasoning)
+        if not calls:
+            return AgentTurnResult(
+                response=response,
+                tool_events=events,
+                reasoning="\n\n".join(reasoning_parts),
+                raw_response=raw_response,
+            )
+        if tool_round >= max_tool_rounds:
+            return AgentTurnResult(
+                response=response,
+                tool_events=events,
+                reached_tool_limit=True,
+                reasoning="\n\n".join(reasoning_parts),
+                raw_response=raw_response,
+            )
+
+        assistant_message = {
+            "role": "assistant",
+            "content": parsed.final,
+            "tool_calls": [call.as_message_call() for call in calls],
+        }
+        if parsed.reasoning:
+            assistant_message["reasoning_content"] = parsed.reasoning
+        messages.append(assistant_message)
+        for call in calls:
+            output = registry.execute(call)
+            events.append(ToolEvent(call=call, output=output))
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": json.dumps(output, ensure_ascii=False, separators=(",", ":")),
+                }
+            )
+
+    return AgentTurnResult(
+        response=response,
+        tool_events=events,
+        reached_tool_limit=True,
+        reasoning="\n\n".join(reasoning_parts),
+        raw_response=raw_response,
+    )
 
 
 def load_chat_runtime(

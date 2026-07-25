@@ -7,12 +7,16 @@ train_corpus_path: data/processed/train_corpus.txt
 val_corpus_path: data/processed/val_corpus.txt
 tokenizer_prefix: data/processed/tokenizer
 
-vocab_size: 2865
+vocab_size: 8192
 model_type: bpe
 character_coverage: 1.0
 seed: 0
 val_fraction: 0.10
-normalization_rule_name: identity
+normalization_rule_name: nmt_nfkc
+
+additional_corpus_jsonl_paths:
+  - data/public_sft/train.jsonl
+require_additional_corpus: true
 
 unk_id: 0
 bos_id: 1
@@ -21,7 +25,17 @@ pad_id: 3
 
 user_defined_symbols:
   - <|system|>
+  - <|developer|>
   - <|user|>
   - <|assistant|>
   - <|json|>
   - </json>
+  - <|tools|>
+  - </|tools|>
+  - <|think|>
+  - </|think|>
+  - <|tool_call|>
+  - </|tool_call|>
+  - <|tool_response|>
+  - </|tool_response|>
+  - <|final|>

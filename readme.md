@@ -4,609 +4,231 @@
   <img src="Assets/logo.jpg" width="400"/>
 </p>
 
-A small, local GPT-style language model project built in pure PyTorch as part of my learning journey into language models, tokenization, training pipelines, and practical LLM engineering.
+A compact, modern decoder-only language model built directly in PyTorch. The
+project exposes the complete local pipeline: public-data preparation,
+tokenizer training, pretraining, reasoning/tool supervised fine-tuning,
+evaluation, and terminal/web chat.
 
-This repository is focused on clarity over complexity. The goal was not to build the biggest model possible, but to understand the full workflow end to end:
+## What is included
 
-* preparing raw Markdown data
-* training a SentencePiece tokenizer
-* creating packed token datasets
-* training a decoder-only Transformer
-* running supervised fine-tuning for chat-style responses
-* chatting with the model locally on consumer hardware
+- Sparse top-2/4 MoE with a shared SwiGLU expert and capacity-free routing
+- RMSNorm, RoPE, QK normalization, and grouped-query attention
+- PyTorch scaled dot-product attention with native GQA where available
+- Staged 2K -> 4K -> 16K context training and an 8,192-token vocabulary
+- Bias-free projections and depth-scaled residual initialization
+- Mixed precision, activation checkpointing, fused AdamW, gradient clipping,
+  warmup/cosine decay, logit z-loss, and router regularization
+- Single-file, fully resumable `.safetensors` training checkpoints
+- Canonical multi-turn messages with system, developer, user, assistant, and
+  tool roles
+- Assistant-only loss masking for reasoning traces, tool calls, and answers
+- Multi-round tool execution with a safe calculator and timezone-aware clock
+- Resumable long-horizon tasks with atomic step checkpoints and bounded memory
+- Streaming terminal chat, persistent sessions, personas, and local web UI
+- One-click Gradio training control center with live loss, throughput,
+  learning-rate, MoE-router, pipeline, log, and checkpoint telemetry
+- Exact dataset revisions, resumable downloads, rate limiting, normalization,
+  content deduplication, checksums, and deterministic splits
 
-This project helped me understand how modern language models work under the hood without depending on high-level training frameworks.
+The implementation is intended for learning and local experimentation. A tiny
+model needs actual pretraining and SFT before it can use these capabilities
+reliably.
 
-## Why I built this
+## Data snapshot
 
-This project is part of my personal learning journey in machine learning and LLM engineering.
+The pinned starter snapshot includes:
 
-I wanted to move beyond using prebuilt APIs and actually understand the mechanics of training a small GPT-style model locally. Building this repo gave me hands-on experience with:
+- 5,000 FineWeb-Edu pretraining documents
+- 297 additional unique local Markdown documents
+- 1,000 OpenR1 Math reasoning examples
+- 2,000 Dolci tool-use examples
+- 300 Tülu MAX thinking/tool examples
 
-* tokenizer training
-* sequence packing for causal language modeling
-* Transformer architecture basics
-* training loop design in raw PyTorch
-* mixed precision and local GPU execution
-* checkpointing and resume logic
-* supervised fine-tuning for instruction/chat behavior
+The 297 Markdown documents exist in two mirrored locations but are included
+once by normalized content hash. Public SFT is split into 3,127 training and
+173 validation records.
 
-For students and beginners, I think this kind of project is especially helpful because it makes each stage visible instead of hiding everything behind large frameworks.
+See [public_datasets.md](docs/public_datasets.md) for revisions and terms, and
+[dataset_requirements.md](docs/dataset_requirements.md) for the accepted data
+contract.
 
-## Project overview
+## Requirements
 
-This repository implements a tiny decoder-only language model that can be trained locally on a single GPU.
+- Python 3.10+
+- PyTorch 2.6+ and SafeTensors 0.5+
+- SentencePiece 0.2+
+- NumPy, PyYAML, tqdm, and aiofiles
+- Gradio 5.9+ and Plotly 5.24+ for the training dashboard
 
-### Main features
-
-* Pure PyTorch implementation
-* SentencePiece tokenizer training
-* Markdown-based training corpus
-* Deterministic train/validation split
-* Packed next-token training data
-* Decoder-only causal Transformer
-* Supervised fine-tuning for chat formatting
-* Optional JSON-style response patterning
-* Streaming terminal chat interface with sessions and personas
-* Lightweight local web chat UI
-* CPU fallback support
-* Windows and Linux friendly paths and scripts
-
-## Hardware, software, and tools used
-
-### Hardware
-
-Recommended:
-
-* NVIDIA RTX 4060 Ti 16GB
-* At least 16GB system RAM
-* SSD storage recommended
-
-Minimum usable setup:
-
-* CPU-only system will run, but training will be very slow
-* Smaller GPUs may require reducing batch size, block size, or model size
-
-### Software
-
-* Python 3.10+
-* pip
-* Git
-* NVIDIA GPU driver (if using CUDA)
-* CUDA-enabled PyTorch build for GPU training
-
-### Python dependencies
-
-* torch
-* sentencepiece
-* numpy
-* PyYAML
-* tqdm
-* aiofiles
-
-## Repository structure
-
-```text
-Tiny-LLM/
-├── README.md
-├── requirements.txt
-├── pyproject.toml
-├── configs/
-│   ├── tokenizer.yaml
-│   ├── pretrain_tiny.yaml
-│   ├── sft_tiny.yaml
-│   ├── chat.yaml
-│   ├── eval_prompts.jsonl
-│   └── personas.json
-├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── sft/
-├── checkpoints/
-├── docs/
-│   ├── development.md
-│   ├── evaluation.md
-│   ├── chat_experience.md
-│   └── model_upgrades.md
-├── src/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── utils.py
-│   ├── tokenizer_utils.py
-│   ├── data_utils.py
-│   ├── datasets.py
-│   ├── dataset_generation.py
-│   ├── model.py
-│   ├── trainer.py
-│   ├── generation.py
-│   ├── evaluation.py
-│   └── chat_runtime.py
-└── scripts/
-    ├── regenerate_datasets.py
-    ├── train_tokenizer.py
-    ├── prepare_data.py
-    ├── train_pretrain.py
-    ├── train_sft.py
-    ├── eval_checkpoint.py
-    ├── generate_sample_train.py
-    ├── validate_jsonl.py
-    ├── deduplicate_jsonl.py
-    ├── dataset_stats.py
-    ├── chat.py
-    └── web_chat.py
-```
-
-## Environment setup guide
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/Konohamaru04/Tiny-LLM.git
-cd Tiny-LLM
-```
-
-### 2. Create a virtual environment
-
-#### Windows PowerShell
+CPU execution is supported but training is slow. A CUDA GPU with at least 16 GB
+VRAM is recommended for the 2K stage. The 16K stage requires SDPA, activation
+checkpointing, batch size 1, and may require more VRAM depending on the CUDA
+kernel selected. Install the current PyTorch build appropriate for your OS and CUDA runtime using the
+[official selector](https://pytorch.org/get-started/locally/), then install:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-#### Windows CMD
-
-```cmd
-python -m venv .venv
-.venv\Scripts\activate.bat
-```
-
-#### Linux / macOS
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
-
-### 3. Install dependencies
-
-If you want GPU training on NVIDIA hardware, install a CUDA-enabled PyTorch build first.
-
-Example for CUDA 12.1:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-```
-
-Then install the remaining dependencies:
-
-```bash
-pip install -r requirements.txt --no-deps
-```
-
-If you are using CPU only, then a standard install may be enough:
-
-```bash
 pip install -r requirements.txt
 ```
 
-### 4. Verify PyTorch sees the GPU
+Verify the runtime:
 
-```bash
-python -c "import torch; print(torch.__version__); print('cuda_available=', torch.cuda.is_available()); print('cuda_version=', torch.version.cuda); print('device_count=', torch.cuda.device_count())"
+```powershell
+python -c "import torch; print(torch.__version__); print('cuda=', torch.cuda.is_available()); print('cuda_runtime=', torch.version.cuda)"
 ```
 
-If `cuda_available=True`, training should use your GPU.
+## One-click training dashboard
 
-## Step-by-step implementation and execution
+On Windows, double-click `run_dash.bat` or launch it from a terminal:
 
-This project follows a clear pipeline. Each stage has a practical role.
-
----
-
-### Step 1: Add raw Markdown training data
-
-You can either manually place Markdown files inside `data/raw/` **or generate a starter dataset automatically** using the helper script:
-
-```bash
-python scripts/regenerate_datasets.py
+```powershell
+.\run_dash.bat
 ```
 
-This script generates natural-language Markdown documents and SFT JSONL files in one shot, designed for educational training runs and testing the full pipeline.
+The launcher switches to the repository directory, creates `.venv` if needed,
+activates it, verifies that NVIDIA CUDA is usable, installs the official
+CUDA-enabled PyTorch wheel when necessary, installs any other missing or
+incompatible packages from `requirements.txt`, and opens the dashboard in the
+default browser. It refuses to start training with a CPU-only PyTorch build.
+The first CUDA installation is a large download.
 
-Typical output:
+The default wheel channel is PyTorch CUDA 13.0. It can be overridden before
+launch when a different official PyTorch channel is required:
 
+```powershell
+$env:TINY_LLM_TORCH_INDEX_URL = "https://download.pytorch.org/whl/cu126"
+.\run_dash.bat
 ```
-data/raw/001_support_triage.md  ...  data/raw/180_*.md
-data/sft/sample_train.jsonl
-data/sft/sample_val.jsonl
+
+Additional dashboard arguments are forwarded, for example:
+
+```powershell
+.\run_dash.bat --port 7861
 ```
 
-Custom counts:
+To launch the unified local control center directly with an already-prepared
+environment:
 
-```bash
-python scripts/regenerate_datasets.py --raw-count 180 --train-count 1080 --val-count 180 --seed 42
+```powershell
+python scripts/training_dashboard.py --inbrowser
 ```
 
-This makes it easy for students to bootstrap a dataset without collecting large external corpora.
+The default button runs the complete resumable `2K -> 4K -> 16K -> SFT`
+curriculum. Existing tokenizer/data artifacts are reused, each training stage
+automatically resumes its own `latest.safetensors` checkpoint, and missing
+required artifacts are prepared in dependency order. Dataset refresh and a
+full tokenizer/array rebuild are explicit options in the UI.
 
----
+The dashboard updates once per second from the trainer's append-only JSONL
+metrics. It does not load model weights into the web process, so visualization
+does not compete for GPU memory with training.
 
-### Step 1: Add raw Markdown training data (manual method)
+By default it binds only to `127.0.0.1:7860`. Use `--host`, `--port`, or the
+opt-in `--share` flag when a different access mode is intentional.
 
-Put your `.md` files inside:
+## End-to-end CLI run
+
+```powershell
+python scripts/download_public_datasets.py --config configs/public_datasets.yaml --stage all
+python scripts/train_tokenizer.py --config configs/tokenizer.yaml
+python scripts/prepare_data.py --config configs/pretrain_tiny.yaml
+python scripts/train_pretrain.py --config configs/pretrain_tiny.yaml
+python scripts/prepare_data.py --config configs/pretrain_long_context_4k.yaml
+python scripts/train_pretrain.py --config configs/pretrain_long_context_4k.yaml
+python scripts/prepare_data.py --config configs/pretrain_long_context_16k.yaml
+python scripts/train_pretrain.py --config configs/pretrain_long_context_16k.yaml
+python scripts/train_sft.py --config configs/sft_long_context_16k.yaml
+python scripts/eval_checkpoint.py --chat-config configs/chat_long_horizon.yaml --sft-config configs/sft_long_context_16k.yaml --pretrain-config configs/pretrain_long_context_16k.yaml
+python scripts/chat.py --config configs/chat_long_horizon.yaml
+```
+
+For resume commands and the web UI, see [ExecSeq.md](ExecSeq.md).
+
+## Architecture defaults
+
+| Setting | Value |
+|---|---:|
+| Layers | 8 |
+| Model width | 384 |
+| Query heads | 6 |
+| Key/value heads | 2 |
+| Routed experts | 4, top-2 |
+| Shared experts | 1 per block |
+| Parameters | 59.4M total |
+| Context | 16,384 after staged continuation |
+| Vocabulary | 8,192 |
+| Expert MLP | SwiGLU, 2.667x rounded to 128 |
+| Positions | RoPE, theta 1,000,000 |
+| Normalization | RMSNorm + per-head QK norm |
+
+The architecture and optimization rationale is documented in
+[model_upgrades.md](docs/model_upgrades.md). The selective integration decision
+for upstream PR #1 is recorded in [pr1_review.md](docs/pr1_review.md).
+
+## Thinking and tool protocol
+
+The tokenizer reserves explicit control tokens:
 
 ```text
-data/raw/
+<|tools|> ... </|tools|>
+<|think|> ... </|think|>
+<|tool_call|> ... </|tool_call|>
+<|tool_response|> ... </|tool_response|>
+<|final|> ...
 ```
 
-You can use:
+Tool definitions use JSON Schema. During inference, the assistant can emit one
+or more calls, the local runtime executes registered tools, appends their
+results as tool messages, and asks the model to continue. The built-in
+calculator parses a restricted arithmetic AST and cannot execute arbitrary
+Python or shell code.
 
-* personal notes
-* tutorials
-* documentation
-* writeups
-* README files
-* technical explainers
+## Repository map
 
-#### What is happening here?
-
-The model needs text to learn from. In this project, the raw corpus is plain Markdown because it is easy to collect, readable, and naturally contains useful language patterns such as headings, lists, paragraphs, and code blocks.
-
-#### Common question
-
-**Why Markdown?**
-
-Markdown is simple, widely available, and a nice middle ground between plain text and structured documentation.
-
----
-
-### Step 2: Train the tokenizer
-
-Run:
-
-```bash
-python scripts/train_tokenizer.py --config configs/tokenizer.yaml
+```text
+configs/                    model, training, chat, and dataset pins
+data/raw/                   local Markdown corpus
+data/raw/public_fineweb/    downloaded FineWeb-Edu subset
+data/public_sft/            normalized reasoning/tool SFT split and manifest
+docs/                       architecture and dataset documentation
+scripts/                    download, prepare, train, evaluate, and chat CLIs
+src/chat_format.py          canonical multi-turn serialization and loss masks
+src/tools.py                tool schemas, parsing, and safe built-ins
+src/moe.py                  sparse routing, experts, and router statistics
+src/model.py                MoE decoder with GQA, QK norm, RoPE, and SDPA
+src/long_horizon.py          resumable task state and bounded progress ledger
+src/checkpoint_compat.py     safe staged RoPE context warm starts
+src/trainer.py              pretraining/SFT optimization loop
+tests/                      architecture, data, masking, and runtime tests
 ```
 
-#### What is happening here?
+Large downloaded datasets and generated tokenizer/array artifacts are ignored
+by Git. The small public-data manifest remains tracked for reproducibility.
 
-The tokenizer converts text into token IDs that the model can understand.
+## Checkpoint migration
 
-This script:
+Old dense `.pt` checkpoints are not architecture-compatible with the MoE
+weights or updated tokenizer. New training state is safely serialized into:
 
-* scans all `.md` files under `data/raw/`
-* creates a deterministic train/validation document split
-* trains SentencePiece on the training split only
-* saves tokenizer artifacts in `data/processed/`
+- `checkpoints/pretrain_moe*/**.safetensors`
+- `checkpoints/sft_moe*/**.safetensors`
 
-#### Why train the tokenizer only on the training split?
+Checkpoint loading verifies both model-configuration and tokenizer
+fingerprints so stale combinations fail early.
 
-This avoids validation leakage. The validation set should remain unseen during training-related steps as much as practical.
+## Validation
 
-#### Output files
-
-Typical outputs include:
-
-* `data/processed/tokenizer.model`
-* `data/processed/tokenizer.vocab`
-* `data/processed/tokenizer_meta.json`
-* `data/processed/train_manifest.json`
-* `data/processed/val_manifest.json`
-
-#### Common question
-
-**Why does the actual vocab size sometimes differ from the requested vocab size?**
-
-If the dataset is too small, SentencePiece may not be able to create the full requested vocabulary. In that case, update the model config to match the actual vocab size recorded in `tokenizer_meta.json`.
-
----
-
-### Step 3: Prepare tokenized training data
-
-Run:
-
-```bash
-python scripts/prepare_data.py --config configs/pretrain_tiny.yaml
+```powershell
+python -m unittest discover -s tests
+python -m compileall -q src scripts tests
+git diff --check
 ```
 
-#### What is happening here?
-
-Now that the tokenizer exists, the raw text is encoded into token IDs.
-
-This script:
-
-* loads the train and validation manifests
-* reads the corresponding Markdown files
-* tokenizes each document
-* concatenates token streams
-* packs them into fixed-length blocks for causal language modeling
-* saves packed arrays for training
-
-#### Why pack fixed-length blocks?
-
-Neural network training is more efficient when sequences are grouped into fixed shapes. Each block becomes one training sample.
-
-#### Output files
-
-Typical outputs include:
-
-* `data/processed/lm_train.npy`
-* `data/processed/lm_val.npy`
-* `data/processed/lm_meta.json`
-
-#### Common question
-
-**What does block size mean?**
-
-`block_size` is the maximum context length the model sees during training. Larger values let the model look farther back, but they increase memory use.
-
----
-
-### Step 4: Run pretraining
-
-Run:
-
-```bash
-python scripts/train_pretrain.py --config configs/pretrain_tiny.yaml
-```
-
-#### What is happening here?
-
-This is the language modeling stage.
-
-The model is trained to predict the next token given previous tokens. This is the core learning task behind GPT-style models.
-
-The training loop includes:
-
-* causal language modeling loss
-* AdamW optimizer
-* learning rate warmup
-* cosine decay
-* gradient accumulation
-* gradient clipping
-* mixed precision when supported
-* validation checks
-* checkpoint saving
-* early stopping based on validation behavior
-
-#### Why pretrain before chat fine-tuning?
-
-Pretraining teaches the model general language patterns. Fine-tuning afterward teaches the model how to answer in a more assistant-like format.
-
-#### Output files
-
-Typical outputs include:
-
-* `checkpoints/pretrain_tiny/best.pt`
-* `checkpoints/pretrain_tiny/latest.pt`
-* periodic `step_*.pt` snapshots
-
-#### Common question
-
-**Why did training stop early?**
-
-If validation loss stops improving for several evaluations, early stopping triggers. This is usually a good thing on small datasets because it reduces overfitting.
-
----
-
-### Step 5: Run supervised fine-tuning (SFT)
-
-Run:
-
-```bash
-python scripts/train_sft.py --config configs/sft_tiny.yaml
-```
-
-#### What is happening here?
-
-In SFT, the model is trained on structured chat examples like:
-
-```json
-{"system": "...", "user": "...", "assistant": "..."}
-```
-
-These are converted into a chat-style token sequence using special tokens such as:
-
-* `<|system|>`
-* `<|user|>`
-* `<|assistant|>`
-
-The training code masks the loss so the model learns mainly from the assistant response rather than the prompt portion.
-
-#### Why is this useful?
-
-Pretraining teaches language. SFT teaches behavior.
-
-Without SFT, the model may continue text but not necessarily respond like a helpful assistant.
-
-#### Output files
-
-Typical outputs include:
-
-* `checkpoints/sft_tiny/best.pt`
-* `checkpoints/sft_tiny/latest.pt`
-
-#### Common question
-
-**Why does the model still make mistakes after SFT?**
-
-Because this is still a small model trained on a relatively small dataset. SFT improves formatting and response style, but it does not magically turn a tiny model into a frontier model.
-
----
-
-### Step 6: Launch the local chat interface
-
-Run:
-
-```bash
-python scripts/chat.py --config configs/chat.yaml
-```
-
-#### What is happening here?
-
-The chat script:
-
-* loads the tokenizer
-* loads the trained checkpoint
-* builds a prompt from system prompt, history, and latest user message
-* generates new tokens autoregressively
-* decodes them back into text
-
-#### Features
-
-* streaming terminal output by default
-* persistent chat sessions via `session_file`
-* persona presets from `configs/personas.json`
-* optional JSON mode
-* temperature sampling
-* top-k sampling
-* repetition penalty
-* max token control
-
-#### Helpful CLI options
-
-```bash
-python scripts/chat.py --list-personas
-python scripts/chat.py --persona coach
-python scripts/chat.py --session-file logs/my_chat.json
-python scripts/chat.py --json-mode
-python scripts/chat.py --no-stream
-```
-
-#### Browser UI
-
-You can also launch a minimal local browser interface:
-
-```bash
-python scripts/web_chat.py --config configs/chat.yaml
-```
-
-This serves a small web app on `http://127.0.0.1:8000` by default, with persona switching, editable system prompts, JSON mode toggling, and the same session file format used by the CLI.
-
-#### Common question
-
-**Why are my answers weak or repetitive?**
-
-This usually means one or more of the following:
-
-* the training corpus is too small
-* the SFT dataset is too repetitive
-* the model is too small for the task
-* training stopped before learning enough
-* the tokenizer/model config mismatch caused problems earlier
-
-## Exact execution flow
-
-For a full end-to-end run:
-
-```bash
-python scripts/regenerate_datasets.py
-python scripts/train_tokenizer.py --config configs/tokenizer.yaml
-python scripts/prepare_data.py --config configs/pretrain_tiny.yaml
-python scripts/train_pretrain.py --config configs/pretrain_tiny.yaml
-python scripts/train_sft.py --config configs/sft_tiny.yaml
-python scripts/eval_checkpoint.py --chat-config configs/chat.yaml --sft-config configs/sft_tiny.yaml
-python scripts/chat.py --config configs/chat.yaml
-python scripts/web_chat.py --config configs/chat.yaml
-```
-
-See [ExecSeq.md](ExecSeq.md) for the full reference with resume, evaluation, and dataset utility commands.
-
-## Practical learning notes for students
-
-If you are a student or beginner, here are a few useful lessons from this kind of project.
-
-### 1. Small models are excellent for learning
-
-You do not need billions of parameters to understand how LLM pipelines work. A tiny model is much easier to debug and reason about.
-
-### 2. Data quality matters a lot
-
-Even a clean model implementation will behave poorly if the dataset is too repetitive, too small, or too synthetic.
-
-### 3. Tokenizers matter more than beginners expect
-
-Poor tokenization choices can affect vocabulary coverage, context efficiency, and general performance.
-
-### 4. Training loops are where engineering discipline shows up
-
-Many learning resources stop at the model definition, but real projects need:
-
-* validation
-* checkpointing
-* mixed precision
-* resume logic
-* gradient accumulation
-* error handling
-
-### 5. Evaluation matters more than optimism
-
-Training loss going down is nice, but validation behavior is what tells you whether the model is actually learning something useful.
-
-## Troubleshooting
-
-### CUDA not found
-
-Make sure you installed a CUDA-enabled PyTorch build, not a CPU-only one.
-
-Check with:
-
-```bash
-python -c "import torch; print(torch.cuda.is_available())"
-```
-
-### Tokenizer vocab mismatch
-
-If the tokenizer produced a smaller actual vocabulary than requested, update `model.vocab_size` in both pretraining and SFT configs.
-
-### Validation data too small
-
-If packing fails, your validation split may not have enough tokens for the chosen block size. Lower the block size or increase the dataset size.
-
-### Chat responses are repetitive
-
-Improve the naturalness and diversity of your training corpus and SFT examples.
-
-## Limitations
-
-This project is educational and intentionally lightweight.
-
-It does not include:
-
-* distributed training
-* large-scale datasets
-* constrained decoding
-* retrieval augmentation
-* huge model sizes
-* advanced serving infrastructure
-
-That is by design. The point is to make the core ideas visible and understandable.
-
-## Credits
-
-This project was built as part of my hands-on learning journey in:
-
-* PyTorch
-* tokenization
-* Transformer language models
-* supervised fine-tuning
-* local LLM experimentation
-
-Special credit goes to the open-source ecosystem that makes projects like this possible, especially:
-
-* PyTorch
-* SentencePiece
-* NumPy
-* YAML tooling
-* the broader ML education and open-source community
-
-## Outro
-
-If you are a student, beginner, or engineer exploring LLMs for the first time, I hope this repository helps make the process feel less mysterious.
-
-This project is not about chasing hype. It is about understanding the pipeline, learning by building, and turning abstract ideas into something you can run, inspect, and improve locally.
-
-If this repository helps you learn even one stage of the workflow more clearly, then it has already done its job.
-
-If you found it useful, feel free to fork it, experiment with it, and adapt it to your own learning journey.
+## Scope
+
+Tiny-LLM does not yet provide distributed expert parallelism, retrieval augmentation,
+constrained JSON decoding, production serving, or frontier-scale evaluation.
+Reasoning traces improve the training signal but are not guaranteed to be
+correct or faithful. Review all dataset licenses and upstream terms before
+redistributing data, weights, or outputs.

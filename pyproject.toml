@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tiny-llm"
-version = "0.1.0"
+version = "0.2.0"
 description = "A tiny end-to-end GPT-style language model pipeline built in pure PyTorch."
 readme = "readme.md"
 requires-python = ">=3.10"
@@ -13,12 +13,15 @@ authors = [
   { name = "Konohamaru04" },
 ]
 dependencies = [
-  "torch>=2.2.0,<2.6.0",
-  "sentencepiece>=0.1.99,<0.3.0",
+  "torch>=2.6.0,<3.0.0",
+  "sentencepiece>=0.2.0,<0.3.0",
   "numpy>=1.26.0,<3.0.0",
   "PyYAML>=6.0.0,<7.0.0",
   "tqdm>=4.66.0,<5.0.0",
   "aiofiles>=23.0.0,<25.0.0",
+  "safetensors>=0.5.0,<1.0.0",
+  "gradio>=5.9.0,<7.0.0",
+  "plotly>=5.24.0,<7.0.0",
 ]
 
 [tool.setuptools.packages.find]

@@ -24,6 +24,8 @@ class TokenizerConfig:
     seed: int = 42
     val_fraction: float = 0.10
     normalization_rule_name: str = "identity"
+    additional_corpus_jsonl_paths: List[str] = field(default_factory=list)
+    require_additional_corpus: bool = False
     unk_id: int = 0
     bos_id: int = 1
     eos_id: int = 2
@@ -31,10 +33,20 @@ class TokenizerConfig:
     user_defined_symbols: List[str] = field(
         default_factory=lambda: [
             "<|system|>",
+            "<|developer|>",
             "<|user|>",
             "<|assistant|>",
             "<|json|>",
             "</json>",
+            "<|tools|>",
+            "</|tools|>",
+            "<|think|>",
+            "</|think|>",
+            "<|tool_call|>",
+            "</|tool_call|>",
+            "<|tool_response|>",
+            "</|tool_response|>",
+            "<|final|>",
         ]
     )
 
@@ -58,15 +70,29 @@ class ModelConfig:
     n_layer: int = 8
     n_head: int = 6
     n_embd: int = 384
-    mlp_ratio: int = 4
-    dropout: float = 0.10
+    n_kv_head: int = 2
+    mlp_ratio: float = 8.0 / 3.0
+    mlp_multiple_of: int = 128
+    dropout: float = 0.0
     tie_weights: bool = True
-    norm_type: str = "layernorm"
-    mlp_type: str = "gelu"
-    positional_embedding: str = "learned"
-    rope_theta: float = 10000.0
+    norm_type: str = "rmsnorm"
+    norm_eps: float = 1e-6
+    mlp_type: str = "swiglu"
+    positional_embedding: str = "rope"
+    rope_theta: float = 1_000_000.0
+    qk_norm: bool = True
+    linear_bias: bool = False
+    initializer_range: float = 0.02
+    residual_scale_init: bool = True
     attention_impl: str = "auto"
     gradient_checkpointing: bool = False
+    moe_num_experts: int = 4
+    moe_top_k: int = 2
+    moe_every_n_layers: int = 1
+    moe_shared_expert: bool = True
+    moe_load_balance_loss_coefficient: float = 1e-2
+    moe_router_z_loss_coefficient: float = 1e-3
+    moe_router_jitter: float = 0.01
 
 
 @dataclass
@@ -113,6 +139,8 @@ class TrainConfig:
     compile_model: bool = False
     compile_backend: str = ""
     compile_mode: str = ""
+    fused_optimizer: bool = True
+    z_loss_coefficient: float = 1e-4
 
 
 @dataclass
@@ -132,7 +160,7 @@ class SFTDataConfig:
 @dataclass
 class SFTTrainConfig:
     output_dir: str = "checkpoints/sft_tiny"
-    pretrained_checkpoint: str = "checkpoints/pretrain_tiny/best.pt"
+    pretrained_checkpoint: str = "checkpoints/pretrain_tiny/best.safetensors"
     seed: int = 42
     batch_size: int = 4
     gradient_accumulation_steps: int = 8
@@ -164,6 +192,8 @@ class SFTTrainConfig:
     compile_model: bool = False
     compile_backend: str = ""
     compile_mode: str = ""
+    fused_optimizer: bool = True
+    z_loss_coefficient: float = 1e-4
 
 
 @dataclass
@@ -175,7 +205,7 @@ class SFTConfig:
 
 @dataclass
 class ChatConfig:
-    checkpoint_path: str = "checkpoints/sft_tiny/best.pt"
+    checkpoint_path: str = "checkpoints/sft_tiny/best.safetensors"
     tokenizer_model_path: str = "data/processed/tokenizer.model"
     system_prompt: str = "You are a concise and helpful assistant."
     personas_path: str = "configs/personas.json"
@@ -188,6 +218,9 @@ class ChatConfig:
     repetition_penalty: float = 1.0
     stream: bool = True
     json_mode: bool = False
+    thinking_mode: bool = True
+    tool_mode: bool = True
+    max_tool_rounds: int = 4
     device: str = "auto"
 
 
@@ -218,28 +251,58 @@ def _validate_model_config(cfg: ModelConfig) -> None:
         raise ValueError("model.n_layer must be > 0")
     if cfg.n_head <= 0:
         raise ValueError("model.n_head must be > 0")
+    if cfg.n_kv_head <= 0:
+        raise ValueError("model.n_kv_head must be > 0")
+    if cfg.n_head % cfg.n_kv_head != 0:
+        raise ValueError(
+            f"model.n_head ({cfg.n_head}) must be divisible by model.n_kv_head ({cfg.n_kv_head})"
+        )
     if cfg.n_embd <= 0:
         raise ValueError("model.n_embd must be > 0")
     if cfg.n_embd % cfg.n_head != 0:
         raise ValueError(
             f"model.n_embd ({cfg.n_embd}) must be divisible by model.n_head ({cfg.n_head})"
         )
-    if cfg.mlp_ratio < 1:
+    if cfg.mlp_ratio < 1.0:
         raise ValueError("model.mlp_ratio must be >= 1")
+    if cfg.mlp_multiple_of <= 0:
+        raise ValueError("model.mlp_multiple_of must be > 0")
     if not (0.0 <= cfg.dropout < 1.0):
         raise ValueError("model.dropout must be in [0.0, 1.0)")
     if cfg.norm_type not in {"layernorm", "rmsnorm"}:
         raise ValueError("model.norm_type must be 'layernorm' or 'rmsnorm'")
+    if cfg.norm_eps <= 0.0:
+        raise ValueError("model.norm_eps must be > 0")
     if cfg.mlp_type not in {"gelu", "swiglu"}:
         raise ValueError("model.mlp_type must be 'gelu' or 'swiglu'")
     if cfg.positional_embedding not in {"learned", "rope"}:
         raise ValueError("model.positional_embedding must be 'learned' or 'rope'")
     if cfg.rope_theta <= 0.0:
         raise ValueError("model.rope_theta must be > 0")
+    if cfg.initializer_range <= 0.0:
+        raise ValueError("model.initializer_range must be > 0")
     if cfg.attention_impl not in {"auto", "manual", "sdpa"}:
         raise ValueError("model.attention_impl must be 'auto', 'manual', or 'sdpa'")
     if cfg.positional_embedding == "rope" and (cfg.n_embd // cfg.n_head) % 2 != 0:
         raise ValueError("RoPE requires head_dim to be even.")
+    if cfg.moe_num_experts < 2:
+        raise ValueError("model.moe_num_experts must be >= 2")
+    if cfg.moe_top_k <= 0 or cfg.moe_top_k > cfg.moe_num_experts:
+        raise ValueError(
+            "model.moe_top_k must be in [1, model.moe_num_experts]"
+        )
+    if cfg.moe_every_n_layers <= 0:
+        raise ValueError("model.moe_every_n_layers must be > 0")
+    if cfg.moe_load_balance_loss_coefficient < 0.0:
+        raise ValueError(
+            "model.moe_load_balance_loss_coefficient must be >= 0"
+        )
+    if cfg.moe_router_z_loss_coefficient < 0.0:
+        raise ValueError(
+            "model.moe_router_z_loss_coefficient must be >= 0"
+        )
+    if not (0.0 <= cfg.moe_router_jitter < 1.0):
+        raise ValueError("model.moe_router_jitter must be in [0, 1)")
 
 
 def _validate_train_config(cfg: TrainConfig | SFTTrainConfig) -> None:
@@ -281,6 +344,8 @@ def _validate_train_config(cfg: TrainConfig | SFTTrainConfig) -> None:
         raise ValueError("training.sample_max_new_tokens must be > 0")
     if cfg.sample_repetition_penalty < 1.0:
         raise ValueError("training.sample_repetition_penalty must be >= 1.0")
+    if cfg.z_loss_coefficient < 0.0:
+        raise ValueError("training.z_loss_coefficient must be >= 0.0")
 
 
 def load_tokenizer_config(path: str | Path) -> TokenizerConfig:
@@ -294,6 +359,8 @@ def load_tokenizer_config(path: str | Path) -> TokenizerConfig:
         raise ValueError("val_fraction must be between 0 and 1")
     if not cfg.user_defined_symbols:
         raise ValueError("user_defined_symbols must not be empty")
+    if any(not isinstance(path, str) or not path.strip() for path in cfg.additional_corpus_jsonl_paths):
+        raise ValueError("additional_corpus_jsonl_paths must contain non-empty strings")
     return cfg
 
 
@@ -334,4 +401,6 @@ def load_chat_config(path: str | Path) -> ChatConfig:
         raise ValueError("temperature must be >= 0.0")
     if cfg.repetition_penalty < 1.0:
         raise ValueError("repetition_penalty must be >= 1.0")
+    if cfg.max_tool_rounds < 0:
+        raise ValueError("max_tool_rounds must be >= 0")
     return cfg

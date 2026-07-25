@@ -10,10 +10,20 @@ from src.utils import assert_exists, ensure_parent_dir, resolve_path
 
 REQUIRED_USER_DEFINED_SYMBOLS = [
     "<|system|>",
+    "<|developer|>",
     "<|user|>",
     "<|assistant|>",
     "<|json|>",
     "</json>",
+    "<|tools|>",
+    "</|tools|>",
+    "<|think|>",
+    "</|think|>",
+    "<|tool_call|>",
+    "</|tool_call|>",
+    "<|tool_response|>",
+    "</|tool_response|>",
+    "<|final|>",
 ]
 
 
@@ -23,9 +33,13 @@ class SentencePieceTokenizer:
         self.sp = spm.SentencePieceProcessor(model_file=str(self.model_path))
         self._verify_required_tokens()
 
+    def _has_exact_piece(self, token: str) -> bool:
+        token_id = int(self.sp.piece_to_id(token))
+        return token_id >= 0 and self.sp.id_to_piece(token_id) == token
+
     def _verify_required_tokens(self) -> None:
         required = ["<pad>", "<bos>", "<eos>", "<unk>"] + REQUIRED_USER_DEFINED_SYMBOLS
-        missing = [tok for tok in required if self.sp.piece_to_id(tok) < 0]
+        missing = [tok for tok in required if not self._has_exact_piece(tok)]
         if missing:
             raise ValueError(
                 f"Tokenizer is missing required special tokens: {missing}. "
@@ -54,7 +68,7 @@ class SentencePieceTokenizer:
 
     def token_to_id(self, token: str) -> int:
         token_id = int(self.sp.piece_to_id(token))
-        if token_id < 0:
+        if token_id < 0 or self.sp.id_to_piece(token_id) != token:
             raise ValueError(f"Token not found in tokenizer vocabulary: {token}")
         return token_id
 

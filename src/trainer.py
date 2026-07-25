@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import inspect
 import json
 import math
 import time
@@ -36,6 +37,7 @@ def build_optimizer(
     model: torch.nn.Module,
     learning_rate: float,
     weight_decay: float,
+    fused: bool = True,
 ) -> torch.optim.Optimizer:
     decay_params = []
     no_decay_params = []
@@ -53,12 +55,18 @@ def build_optimizer(
         {"params": no_decay_params, "weight_decay": 0.0},
     ]
 
-    return torch.optim.AdamW(
-        optim_groups,
-        lr=learning_rate,
-        betas=(0.9, 0.95),
-        eps=1e-8,
+    kwargs: dict[str, Any] = {
+        "lr": learning_rate,
+        "betas": (0.9, 0.95),
+        "eps": 1e-8,
+    }
+    supports_fused = "fused" in inspect.signature(torch.optim.AdamW).parameters
+    all_cuda = bool(decay_params or no_decay_params) and all(
+        param.device.type == "cuda" for param in decay_params + no_decay_params
     )
+    if supports_fused:
+        kwargs["fused"] = bool(fused and all_cuda)
+    return torch.optim.AdamW(optim_groups, **kwargs)
 
 
 def build_cosine_scheduler(
@@ -115,6 +123,7 @@ class Trainer:
             self.model,
             learning_rate=self.training_config.learning_rate,
             weight_decay=self.training_config.weight_decay,
+            fused=bool(getattr(self.training_config, "fused_optimizer", True)),
         )
         self.scheduler = build_cosine_scheduler(
             self.optimizer,
@@ -134,8 +143,8 @@ class Trainer:
             self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_grad_scaler)
 
         self.output_dir = ensure_dir(self.training_config.output_dir)
-        self.latest_path = self.output_dir / "latest.pt"
-        self.best_path = self.output_dir / "best.pt"
+        self.latest_path = self.output_dir / "latest.safetensors"
+        self.best_path = self.output_dir / "best.safetensors"
         self.metrics_jsonl_path = (
             resolve_path(self.training_config.metrics_jsonl_path)
             if getattr(self.training_config, "metrics_jsonl_path", "")
@@ -165,6 +174,19 @@ class Trainer:
         self.best_val_loss = float("inf")
         self.bad_eval_count = 0
         self.last_val_loss = float("inf")
+
+    def _forward_loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        logits, loss = self.model(x, y)
+        if loss is None:
+            raise RuntimeError("Model returned no loss.")
+        coefficient = float(getattr(self.training_config, "z_loss_coefficient", 0.0))
+        if coefficient > 0.0:
+            valid = y.ne(-100)
+            if valid.any():
+                log_z = torch.logsumexp(logits.float(), dim=-1)
+                z_loss = log_z[valid].square().mean()
+                loss = loss + (coefficient * z_loss)
+        return loss
 
     def _autocast_context(self):
         if not self.amp_enabled:
@@ -211,6 +233,8 @@ class Trainer:
             "tokens_per_sec",
             "best_val_loss",
             "bad_eval_count",
+            "router_load_balance_loss",
+            "router_z_loss",
         ]
         ensure_parent_dir(self.metrics_csv_path)
         csv_exists = self.metrics_csv_path.exists()
@@ -228,6 +252,13 @@ class Trainer:
         lr: float | None = None,
         tokens_per_sec: float | None = None,
     ) -> None:
+        raw_model = unwrap_model(self.model)
+        router_load_balance = getattr(
+            raw_model,
+            "last_router_load_balance_loss",
+            None,
+        )
+        router_z = getattr(raw_model, "last_router_z_loss", None)
         row = {
             "step": self.global_step,
             "event": event,
@@ -239,6 +270,16 @@ class Trainer:
             "tokens_per_sec": None if tokens_per_sec is None else round(float(tokens_per_sec), 2),
             "best_val_loss": round(float(self.best_val_loss), 6) if math.isfinite(self.best_val_loss) else None,
             "bad_eval_count": int(self.bad_eval_count),
+            "router_load_balance_loss": (
+                None
+                if router_load_balance is None
+                else round(float(router_load_balance.cpu().item()), 6)
+            ),
+            "router_z_loss": (
+                None
+                if router_z is None
+                else round(float(router_z.cpu().item()), 6)
+            ),
         }
         self._append_metrics_row(row)
 
@@ -313,9 +354,7 @@ class Trainer:
                 x, y = batch
                 x = x.to(self.device, non_blocking=self.device.type == "cuda")
                 y = y.to(self.device, non_blocking=self.device.type == "cuda")
-                _, loss = self.model(x, y)
-                if loss is None:
-                    raise RuntimeError("Model returned no loss during evaluation.")
+                loss = self._forward_loss(x, y)
                 losses.append(float(loss.detach().cpu().item()))
 
         self.model.train()
@@ -359,9 +398,7 @@ class Trainer:
                 y = y.to(self.device, non_blocking=self.device.type == "cuda")
 
                 with self._autocast_context():
-                    _, loss = self.model(x, y)
-                    if loss is None:
-                        raise RuntimeError("Model returned no loss during training.")
+                    loss = self._forward_loss(x, y)
                     if not torch.isfinite(loss):
                         raise RuntimeError(
                             f"Non-finite loss encountered at global_step={self.global_step}: {loss.item()}"
@@ -452,14 +489,20 @@ class Trainer:
 
                 if self.training_config.patience > 0 and self.bad_eval_count >= self.training_config.patience:
                     self.save_checkpoint(self.latest_path, "latest")
-                    snapshot = self.output_dir / f"step_{self.global_step:07d}.pt"
+                    snapshot = (
+                        self.output_dir
+                        / f"step_{self.global_step:07d}.safetensors"
+                    )
                     self.save_checkpoint(snapshot, f"snapshot@{self.global_step}")
                     print("[early-stop] patience exhausted. Stopping training.")
                     return
 
             if should_save:
                 self.save_checkpoint(self.latest_path, "latest")
-                snapshot = self.output_dir / f"step_{self.global_step:07d}.pt"
+                snapshot = (
+                    self.output_dir
+                    / f"step_{self.global_step:07d}.safetensors"
+                )
                 self.save_checkpoint(snapshot, f"snapshot@{self.global_step}")
 
         print("[train] finished max_steps.")

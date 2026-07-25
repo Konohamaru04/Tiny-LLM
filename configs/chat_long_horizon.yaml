@@ -1,9 +1,9 @@
 checkpoint_path: checkpoints/sft_moe_16k/best.safetensors
 tokenizer_model_path: data/processed/tokenizer.model
-system_prompt: You are a practical assistant. Think carefully when needed, use available tools when they improve accuracy, and ground the final answer in tool results.
+system_prompt: You are a practical long-horizon assistant. Think carefully, use tools when they improve accuracy, preserve task state, and ground the final answer in tool results.
 personas_path: configs/personas.json
 default_persona: technical
-session_file: logs/chat_session.json
+session_file: logs/long_horizon_chat_session.json
 max_history_turns: 64
 temperature: 0.4
 top_k: 80

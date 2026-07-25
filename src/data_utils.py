@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import random
 from pathlib import Path
@@ -23,6 +25,22 @@ def collect_markdown_files(raw_dir: str | Path) -> List[Path]:
             f"Place one or more .md files under data/raw/ and try again."
         )
     return files
+
+
+def deduplicate_markdown_files(paths: Sequence[Path]) -> tuple[List[Path], List[Path]]:
+    """Keep the first deterministic path for each normalized document body."""
+    unique: List[Path] = []
+    duplicates: List[Path] = []
+    seen_hashes: set[str] = set()
+    for path in sorted(paths):
+        text = read_markdown_file(path)
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if content_hash in seen_hashes:
+            duplicates.append(path)
+            continue
+        seen_hashes.add(content_hash)
+        unique.append(path)
+    return unique, duplicates
 
 
 def normalize_markdown_text(text: str) -> str:
@@ -120,6 +138,74 @@ def write_combined_corpus(paths: Iterable[Path], out_path: str | Path) -> int:
     with out_path.open("w", encoding="utf-8") as f:
         f.write(combined)
     return len(docs)
+
+
+def _sft_text_segments(row: dict) -> Iterable[str]:
+    messages = row.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            for key in ("content", "reasoning_content", "reasoning"):
+                value = message.get(key)
+                if isinstance(value, str) and value.strip():
+                    yield value.strip()
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                yield json.dumps(tool_calls, ensure_ascii=False, separators=(",", ":"))
+    else:
+        for key in ("system", "user", "assistant"):
+            value = row.get(key)
+            if isinstance(value, str) and value.strip():
+                yield value.strip()
+
+    tools = row.get("tools")
+    if isinstance(tools, list) and tools:
+        yield json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+
+
+def append_sft_jsonl_to_corpus(
+    jsonl_paths: Sequence[str | Path],
+    corpus_path: str | Path,
+) -> dict:
+    """Append chat/tool text to a tokenizer corpus without leaking JSONL validation data."""
+    corpus = resolve_path(corpus_path)
+    if not corpus.exists():
+        raise FileNotFoundError(f"Tokenizer corpus must exist before appending SFT text: {corpus}")
+
+    records = 0
+    segments = 0
+    with corpus.open("a", encoding="utf-8") as output:
+        for jsonl_path in jsonl_paths:
+            source = assert_exists(jsonl_path, "Additional tokenizer JSONL corpus")
+            with source.open("r", encoding="utf-8") as input_file:
+                for line_no, line in enumerate(input_file, start=1):
+                    raw = line.strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"Malformed JSONL in tokenizer corpus {source}:{line_no}: {exc}"
+                        ) from exc
+                    if not isinstance(row, dict):
+                        raise ValueError(
+                            f"Tokenizer corpus row must be an object: {source}:{line_no}"
+                        )
+                    records += 1
+                    for segment in _sft_text_segments(row):
+                        normalized = normalize_markdown_text(segment)
+                        if not normalized:
+                            continue
+                        # SentencePiece skips lines over max_sentence_length, so split
+                        # long tool trajectories into bounded training lines.
+                        for start in range(0, len(normalized), 12000):
+                            output.write(normalized[start : start + 12000])
+                            output.write("\n")
+                            segments += 1
+
+    return {"records": records, "segments": segments}
 
 
 def encode_documents(

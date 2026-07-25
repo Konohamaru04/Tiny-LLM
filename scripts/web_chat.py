@@ -19,9 +19,11 @@ from src.chat_runtime import (
     load_personas,
     load_session,
     resolve_persona,
+    run_agent_turn,
     save_session,
 )
 from src.config import load_chat_config
+from src.tools import build_default_tool_registry
 
 
 HTML_PAGE = """<!doctype html>
@@ -649,21 +651,43 @@ class ChatWebApp:
         self.persist_session()
 
     def chat(self, message: str) -> str:
-        response = generate_chat_response(
-            model=self.model,
-            tokenizer=self.tokenizer,
-            model_cfg=self.model_cfg,
-            device=self.device,
-            system_prompt=self.system_prompt,
-            history=self.history,
-            user_message=message,
-            max_history_turns=self.cfg.max_history_turns,
-            json_mode=self.json_mode,
-            temperature=self.cfg.temperature,
-            top_k=self.cfg.top_k,
-            max_new_tokens=self.cfg.max_new_tokens,
-            repetition_penalty=self.cfg.repetition_penalty,
-        )
+        if self.cfg.tool_mode:
+            result = run_agent_turn(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                model_cfg=self.model_cfg,
+                device=self.device,
+                system_prompt=self.system_prompt,
+                history=self.history,
+                user_message=message,
+                max_history_turns=self.cfg.max_history_turns,
+                registry=build_default_tool_registry(),
+                max_tool_rounds=self.cfg.max_tool_rounds,
+                json_mode=self.json_mode,
+                thinking_mode=self.cfg.thinking_mode,
+                temperature=self.cfg.temperature,
+                top_k=self.cfg.top_k,
+                max_new_tokens=self.cfg.max_new_tokens,
+                repetition_penalty=self.cfg.repetition_penalty,
+            )
+            response = result.response
+        else:
+            response = generate_chat_response(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                model_cfg=self.model_cfg,
+                device=self.device,
+                system_prompt=self.system_prompt,
+                history=self.history,
+                user_message=message,
+                max_history_turns=self.cfg.max_history_turns,
+                json_mode=self.json_mode,
+                temperature=self.cfg.temperature,
+                top_k=self.cfg.top_k,
+                max_new_tokens=self.cfg.max_new_tokens,
+                repetition_penalty=self.cfg.repetition_penalty,
+                thinking_mode=self.cfg.thinking_mode,
+            )
         if not response:
             response = "(empty response)"
         self.history.append((message, response))
@@ -676,6 +700,8 @@ class ChatWebApp:
             "persona": self.active_persona.name,
             "system_prompt": self.system_prompt,
             "json_mode": self.json_mode,
+            "thinking_mode": self.cfg.thinking_mode,
+            "tool_mode": self.cfg.tool_mode,
             "session_file": str(Path(self.session_file).resolve()) if self.session_file else "",
             "history": [{"user": user, "assistant": assistant} for user, assistant in self.history],
             "personas": [

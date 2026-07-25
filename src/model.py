@@ -8,25 +8,30 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from src.config import ModelConfig
+from src.moe import SparseMoE
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        norm = x.pow(2).mean(dim=-1, keepdim=True)
-        x = x * torch.rsqrt(norm + self.eps)
-        return self.weight * x
+        if hasattr(F, "rms_norm"):
+            return F.rms_norm(x, (x.shape[-1],), self.weight, self.eps)
+        input_dtype = x.dtype
+        x_float = x.float()
+        norm = x_float.pow(2).mean(dim=-1, keepdim=True)
+        normalized = x_float * torch.rsqrt(norm + self.eps)
+        return (self.weight.float() * normalized).to(dtype=input_dtype)
 
 
 def build_norm(config: ModelConfig) -> nn.Module:
     if config.norm_type == "layernorm":
-        return nn.LayerNorm(config.n_embd)
+        return nn.LayerNorm(config.n_embd, eps=config.norm_eps)
     if config.norm_type == "rmsnorm":
-        return RMSNorm(config.n_embd)
+        return RMSNorm(config.n_embd, eps=config.norm_eps)
     raise ValueError(f"Unsupported norm_type: {config.norm_type}")
 
 
@@ -46,15 +51,24 @@ class CausalSelfAttention(nn.Module):
             )
 
         self.n_head = config.n_head
+        self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
+        self.kv_dim = self.n_kv_head * self.head_dim
+        self.kv_repeat = self.n_head // self.n_kv_head
         self.dropout = config.dropout
         self.attention_impl = config.attention_impl
         self.use_rope = config.positional_embedding == "rope"
         self.use_sdpa = self._select_attention_impl(config.attention_impl)
 
-        self.qkv_proj = nn.Linear(config.n_embd, 3 * config.n_embd)
-        self.out_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.qkv_proj = nn.Linear(
+            config.n_embd,
+            config.n_embd + (2 * self.kv_dim),
+            bias=config.linear_bias,
+        )
+        self.out_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.linear_bias)
+        self.q_norm = RMSNorm(self.head_dim, eps=config.norm_eps) if config.qk_norm else nn.Identity()
+        self.k_norm = RMSNorm(self.head_dim, eps=config.norm_eps) if config.qk_norm else nn.Identity()
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
 
@@ -97,25 +111,40 @@ class CausalSelfAttention(nn.Module):
         bsz, seq_len, channels = x.shape
 
         qkv = self.qkv_proj(x)
-        q, k, v = qkv.split(self.n_embd, dim=2)
+        q, k, v = qkv.split((self.n_embd, self.kv_dim, self.kv_dim), dim=2)
 
         q = q.view(bsz, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        k = k.view(bsz, seq_len, self.n_head, self.head_dim).transpose(1, 2)
-        v = v.view(bsz, seq_len, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(bsz, seq_len, self.n_kv_head, self.head_dim).transpose(1, 2)
+        v = v.view(bsz, seq_len, self.n_kv_head, self.head_dim).transpose(1, 2)
 
-        q = self._apply_rope(q)
-        k = self._apply_rope(k)
+        q = self._apply_rope(self.q_norm(q))
+        k = self._apply_rope(self.k_norm(k))
 
         if self.use_sdpa:
-            y = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=None,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=True,
-            )
+            try:
+                y = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=True,
+                    enable_gqa=self.n_head != self.n_kv_head,
+                )
+            except TypeError:  # PyTorch versions before native GQA support.
+                k = k.repeat_interleave(self.kv_repeat, dim=1)
+                v = v.repeat_interleave(self.kv_repeat, dim=1)
+                y = F.scaled_dot_product_attention(
+                    q,
+                    k,
+                    v,
+                    attn_mask=None,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=True,
+                )
         else:
+            k = k.repeat_interleave(self.kv_repeat, dim=1)
+            v = v.repeat_interleave(self.kv_repeat, dim=1)
             att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
             mask = self.causal_mask[:, :, :seq_len, :seq_len]
             att = att.masked_fill(~mask, float("-inf"))
@@ -132,11 +161,19 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
-        hidden_dim = config.n_embd * config.mlp_ratio
+        raw_hidden_dim = config.n_embd * config.mlp_ratio
+        hidden_dim = int(
+            config.mlp_multiple_of
+            * math.ceil(raw_hidden_dim / config.mlp_multiple_of)
+        )
         self.mlp_type = config.mlp_type
-        self.fc = nn.Linear(config.n_embd, hidden_dim)
-        self.gate = nn.Linear(config.n_embd, hidden_dim) if self.mlp_type == "swiglu" else None
-        self.proj = nn.Linear(hidden_dim, config.n_embd)
+        self.fc = nn.Linear(config.n_embd, hidden_dim, bias=config.linear_bias)
+        self.gate = (
+            nn.Linear(config.n_embd, hidden_dim, bias=config.linear_bias)
+            if self.mlp_type == "swiglu"
+            else None
+        )
+        self.proj = nn.Linear(hidden_dim, config.n_embd, bias=config.linear_bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -155,12 +192,39 @@ class MLP(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config: ModelConfig, layer_index: int):
         super().__init__()
         self.ln_1 = build_norm(config)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = build_norm(config)
-        self.mlp = MLP(config)
+        use_moe = (layer_index + 1) % config.moe_every_n_layers == 0
+        if use_moe:
+            raw_hidden_dim = config.n_embd * config.mlp_ratio
+            hidden_dim = int(
+                config.mlp_multiple_of
+                * math.ceil(raw_hidden_dim / config.mlp_multiple_of)
+            )
+            self.mlp: nn.Module = SparseMoE(
+                dim=config.n_embd,
+                hidden_dim=hidden_dim,
+                num_experts=config.moe_num_experts,
+                top_k=config.moe_top_k,
+                dropout=config.dropout,
+                linear_bias=config.linear_bias,
+                router_jitter=config.moe_router_jitter,
+                shared_expert=config.moe_shared_expert,
+            )
+        else:
+            self.mlp = MLP(config)
+
+    @property
+    def router_losses(self) -> tuple[torch.Tensor, torch.Tensor] | None:
+        if not isinstance(self.mlp, SparseMoE) or self.mlp.last_stats is None:
+            return None
+        return (
+            self.mlp.last_stats.load_balance_loss,
+            self.mlp.last_stats.router_z_loss,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_1(x))
@@ -177,23 +241,51 @@ class GPT(nn.Module):
         self.pos_emb = nn.Embedding(config.block_size, config.n_embd) if config.positional_embedding == "learned" else None
         self.drop = nn.Dropout(config.dropout)
 
-        self.blocks = nn.ModuleList([TransformerBlock(config) for _ in range(config.n_layer)])
+        self.blocks = nn.ModuleList(
+            TransformerBlock(config, layer_index)
+            for layer_index in range(config.n_layer)
+        )
         self.ln_f = build_norm(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.gradient_checkpointing = bool(config.gradient_checkpointing)
+        self.last_router_load_balance_loss: torch.Tensor | None = None
+        self.last_router_z_loss: torch.Tensor | None = None
 
         if config.tie_weights:
             self.lm_head.weight = self.token_emb.weight
 
         self.apply(self._init_weights)
+        if config.residual_scale_init:
+            residual_std = config.initializer_range / math.sqrt(2 * config.n_layer)
+            for block in self.blocks:
+                nn.init.normal_(block.attn.out_proj.weight, mean=0.0, std=residual_std)
+                if isinstance(block.mlp, SparseMoE):
+                    for expert in block.mlp.experts:
+                        nn.init.normal_(
+                            expert.down.weight,
+                            mean=0.0,
+                            std=residual_std,
+                        )
+                    if block.mlp.shared_expert is not None:
+                        nn.init.normal_(
+                            block.mlp.shared_expert.down.weight,
+                            mean=0.0,
+                            std=residual_std,
+                        )
+                else:
+                    nn.init.normal_(
+                        block.mlp.proj.weight,
+                        mean=0.0,
+                        std=residual_std,
+                    )
 
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.initializer_range)
 
     def forward(
         self,
@@ -238,5 +330,28 @@ class GPT(nn.Module):
                 targets.reshape(-1),
                 ignore_index=-100,
             )
+            router_losses = [
+                block.router_losses
+                for block in self.blocks
+                if block.router_losses is not None
+            ]
+            if router_losses:
+                load_balance_loss = torch.stack(
+                    [item[0] for item in router_losses]
+                ).mean()
+                router_z_loss = torch.stack(
+                    [item[1] for item in router_losses]
+                ).mean()
+                self.last_router_load_balance_loss = (
+                    load_balance_loss.detach()
+                )
+                self.last_router_z_loss = router_z_loss.detach()
+                loss = (
+                    loss
+                    + self.config.moe_load_balance_loss_coefficient
+                    * load_balance_loss
+                    + self.config.moe_router_z_loss_coefficient
+                    * router_z_loss
+                )
 
         return logits, loss

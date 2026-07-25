@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.data_utils import (
     collect_markdown_files,
+    deduplicate_markdown_files,
     deterministic_train_val_split,
     encode_documents,
     load_manifest,
@@ -16,6 +17,24 @@ from tests._helpers import train_test_tokenizer, write_markdown_docs
 
 
 class DataPipelineTests(unittest.TestCase):
+    def test_markdown_content_deduplication_keeps_one_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            raw_dir = Path(tmp) / "raw"
+            nested_dir = raw_dir / "public"
+            nested_dir.mkdir(parents=True)
+            (raw_dir / "a.md").write_bytes(b"same\r\ncontent\n")
+            (nested_dir / "copy.md").write_bytes(b"same\ncontent\n")
+            (nested_dir / "unique.md").write_text("different", encoding="utf-8")
+
+            unique, duplicates = deduplicate_markdown_files(
+                collect_markdown_files(raw_dir)
+            )
+
+            self.assertEqual(len(unique), 2)
+            self.assertEqual(len(duplicates), 1)
+            self.assertEqual(unique[0].name, "a.md")
+            self.assertEqual(duplicates[0].name, "copy.md")
+
     def test_markdown_split_manifest_encode_and_pack_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -40,3 +59,10 @@ class DataPipelineTests(unittest.TestCase):
             self.assertEqual(packed.shape[1], 17)
             self.assertEqual(meta["block_size"], 16)
             self.assertGreater(meta["num_sequences"], 0)
+
+    def test_tokenizer_rejects_unknown_control_token_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tokenizer = train_test_tokenizer(Path(tmp))
+
+            with self.assertRaisesRegex(ValueError, "not found"):
+                tokenizer.token_to_id("<|not_a_real_control_token|>")

@@ -1,155 +1,106 @@
 # Tiny-LLM execution sequence
 
-## 0. Generate raw Markdown and SFT data
+Run commands from the repository root.
 
-Generates 180 `.md` documents in `data/raw/` **and** writes
-`data/sft/sample_train.jsonl` + `data/sft/sample_val.jsonl` in one shot:
+## 1. Download the pinned public dataset snapshot
 
-```
-python scripts/regenerate_datasets.py
-```
-
-Custom counts:
-
-```
-python scripts/regenerate_datasets.py --raw-count 180 --train-count 1080 --val-count 180 --seed 11
+```powershell
+python scripts/download_public_datasets.py --config configs/public_datasets.yaml --stage all
 ```
 
-## 1. Train the tokenizer
+This prepares 5,000 FineWeb-Edu documents plus 3,300 reasoning/tool SFT
+examples. The 297 additional local Markdown documents under `data/raw/` are
+also included once; identical mirrored copies are removed by content hash.
 
-```
+## 2. Train the tokenizer
+
+```powershell
 python scripts/train_tokenizer.py --config configs/tokenizer.yaml
 ```
 
-> **Check vocab size:** open `data/processed/tokenizer_meta.json` and read
-> `actual_vocab_size`. If it differs from `model.vocab_size` in
-> `configs/pretrain_tiny.yaml` and `configs/sft_tiny.yaml`, update both
-> files to match before continuing.
+The tokenizer learns from the pretraining train split and the public SFT
+training split, including all chat, reasoning, and tool-control tokens.
 
-## 2. Prepare packed pretraining arrays
+## 3. Pack the 2K pretraining arrays
 
-```
+```powershell
 python scripts/prepare_data.py --config configs/pretrain_tiny.yaml
 ```
 
-## 3. Run pretraining
+## 4. Pretrain the 2K MoE stage
 
-```
+```powershell
 python scripts/train_pretrain.py --config configs/pretrain_tiny.yaml
 ```
 
-Resume pretraining from the latest checkpoint:
+Resume:
 
-```
-python scripts/train_pretrain.py --config configs/pretrain_tiny.yaml --resume checkpoints/pretrain_tiny/latest.pt
-```
-
-## 4. Run supervised fine-tuning
-
-```
-python scripts/train_sft.py --config configs/sft_tiny.yaml
+```powershell
+python scripts/train_pretrain.py --config configs/pretrain_tiny.yaml --resume checkpoints/pretrain_moe/latest.safetensors
 ```
 
-Resume SFT from the latest checkpoint:
+## 5. Continue RoPE context to 4K and then 16K
 
-```
-python scripts/train_sft.py --config configs/sft_tiny.yaml --resume checkpoints/sft_tiny/latest.pt
-```
+The context stages model-only warm start from the preceding SafeTensors
+checkpoint. Optimizer and scheduler state intentionally restart at each larger
+context length.
 
-## 5. Evaluate the checkpoint
-
-```
-python scripts/eval_checkpoint.py --chat-config configs/chat.yaml --sft-config configs/sft_tiny.yaml
-```
-
-Optional fuller evaluation:
-
-```
-python scripts/eval_checkpoint.py --chat-config configs/chat.yaml --sft-config configs/sft_tiny.yaml --pretrain-config configs/pretrain_tiny.yaml --prompts configs/eval_prompts.jsonl --repetition-penalty 1.05
+```powershell
+python scripts/prepare_data.py --config configs/pretrain_long_context_4k.yaml
+python scripts/train_pretrain.py --config configs/pretrain_long_context_4k.yaml
+python scripts/prepare_data.py --config configs/pretrain_long_context_16k.yaml
+python scripts/train_pretrain.py --config configs/pretrain_long_context_16k.yaml
 ```
 
-## 6. Run the terminal chat interface
+The warm-start validator permits only a larger RoPE window plus compatible
+SDPA/checkpointing execution switches. Expert count, top-k, GQA shape, width,
+depth, tokenizer hash, and all learned parameter shapes must match.
 
-List personas:
+## 6. Supervised fine-tuning at 16K
 
-```
-python scripts/chat.py --config configs/chat.yaml --list-personas
-```
-
-Start chat:
-
-```
-python scripts/chat.py --config configs/chat.yaml
+```powershell
+python scripts/train_sft.py --config configs/sft_long_context_16k.yaml
 ```
 
-Start chat with a specific persona:
+Resume:
 
-```
-python scripts/chat.py --config configs/chat.yaml --persona coach
-```
-
-Start chat in JSON mode:
-
-```
-python scripts/chat.py --config configs/chat.yaml --json-mode
+```powershell
+python scripts/train_sft.py --config configs/sft_long_context_16k.yaml --resume checkpoints/sft_moe_16k/latest.safetensors
 ```
 
-Start chat with a custom session file:
+Dynamic batch padding means short SFT examples do not pay the full 16K
+padding cost.
 
-```
-python scripts/chat.py --config configs/chat.yaml --session-file logs/my_chat.json
-```
+## 7. Evaluate
 
-Disable streaming:
-
-```
-python scripts/chat.py --config configs/chat.yaml --no-stream
+```powershell
+python scripts/eval_checkpoint.py --chat-config configs/chat_long_horizon.yaml --sft-config configs/sft_long_context_16k.yaml --pretrain-config configs/pretrain_long_context_16k.yaml --prompts configs/eval_prompts.jsonl
 ```
 
-## 7. Run the web chat UI
+## 8. Chat with thinking and tool use
 
-```
-python scripts/web_chat.py --config configs/chat.yaml
-```
+Terminal:
 
-Start the web UI with a custom persona and session file:
-
-```
-python scripts/web_chat.py --config configs/chat.yaml --persona json_bot --session-file logs/browser_chat.json
+```powershell
+python scripts/chat.py --config configs/chat_long_horizon.yaml
 ```
 
-Default web URL:
+Web:
 
-```
-http://127.0.0.1:8000
-```
-
----
-
-## Optional: API-based SFT record generation
-
-Uses the GLM API to generate extra records. Output goes to `sample_train.jsonl`
-**at the repo root** — not inside `data/sft/`. After reviewing and deduplicating,
-manually copy records you want into `data/sft/sample_train.jsonl`.
-
-Requires `GLM_API_KEY` set in `.env`.
-
-Generate seed records without the API:
-
-```
-python scripts/generate_sample_train.py --config config/dataset_config.json --seed-only --count 50
+```powershell
+python scripts/web_chat.py --config configs/chat_long_horizon.yaml
 ```
 
-Validate, deduplicate, and inspect:
+The web UI defaults to `http://127.0.0.1:8000`. Tool mode provides a
+restricted calculator and current-time lookup. The long-horizon chat config
+allows up to 32 in-turn tool rounds.
 
-```
-python scripts/validate_jsonl.py --config config/dataset_config.json --input sample_train.jsonl
-python scripts/deduplicate_jsonl.py --config config/dataset_config.json --input sample_train.jsonl --in-place
-python scripts/dataset_stats.py --config config/dataset_config.json --input sample_train.jsonl
+For task-level execution that can pause and resume across processes:
+
+```powershell
+python scripts/run_agent_task.py --state logs/task.json --objective "Complete this multi-step task." --steps-per-run 8
+python scripts/run_agent_task.py --state logs/task.json --steps-per-run 8
 ```
 
-Live API generation:
-
-```
-python scripts/generate_sample_train.py --config config/dataset_config.json --count 50
-```
+Old dense `.pt` checkpoints are architecture-incompatible with the MoE model
+and updated tokenizer. Complete pretraining and SFT before launching chat.

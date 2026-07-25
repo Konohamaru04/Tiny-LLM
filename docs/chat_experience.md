@@ -9,6 +9,8 @@ Phase 5 adds a more complete local chat experience on top of the shared runtime 
 * session save and resume support through `session_file`
 * a lightweight local browser UI in `scripts/web_chat.py`
 * one shared generation path for CLI and browser usage
+* hidden reasoning separated from the visible `<|final|>` answer
+* a checkpointed long-horizon task runner
 
 ## CLI workflow
 
@@ -73,3 +75,21 @@ Saved sessions are plain JSON objects with:
 * `history`
 
 Each history entry stores `user` and `assistant` text so a session can be reopened by either chat surface.
+
+## Long-horizon tasks
+
+Create a task and run up to eight model steps in this process:
+
+```powershell
+python scripts/run_agent_task.py --state logs/research_task.json --objective "Complete the requested multi-step task and report verified results." --steps-per-run 8
+```
+
+Resume the same state without repeating the objective:
+
+```powershell
+python scripts/run_agent_task.py --state logs/research_task.json --steps-per-run 8
+```
+
+The default total budget is 64 model steps. Use `--max-steps` to extend it and
+`--max-wall-time-seconds` to checkpoint and pause on a wall-clock boundary.
+State is written atomically after every model/tool round.

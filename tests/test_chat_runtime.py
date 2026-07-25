@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -11,9 +12,11 @@ from src.chat_runtime import (
     load_personas,
     load_session,
     resolve_persona,
+    run_agent_turn,
     save_session,
 )
 from src.config import ModelConfig
+from src.tools import build_default_tool_registry
 from tests._helpers import train_test_tokenizer, write_personas
 
 
@@ -35,6 +38,56 @@ class _FakeAutoregressiveModel(torch.nn.Module):
 
 
 class ChatRuntimeTests(unittest.TestCase):
+    def test_agent_turn_executes_tool_and_continues_with_result(self) -> None:
+        generated = iter(
+            [
+                (
+                    "<|think|>Use exact arithmetic.</|think|>\n"
+                    '<|tool_call|>{"id":"math_1","name":"calculator",'
+                    '"arguments":{"expression":"19 * 23"}}</|tool_call|>'
+                ),
+                "<|final|>\nThe exact result is 437.",
+            ]
+        )
+        message_snapshots: list[list[dict]] = []
+
+        def fake_generate_messages_response(*args, **kwargs):
+            message_snapshots.append([dict(message) for message in kwargs["messages"]])
+            return next(generated)
+
+        with patch(
+            "src.chat_runtime.generate_messages_response",
+            side_effect=fake_generate_messages_response,
+        ):
+            result = run_agent_turn(
+                model=None,
+                tokenizer=None,
+                model_cfg=None,
+                device=torch.device("cpu"),
+                system_prompt="Use tools.",
+                history=[],
+                user_message="What is 19 * 23?",
+                max_history_turns=0,
+                registry=build_default_tool_registry(),
+                max_tool_rounds=2,
+                json_mode=False,
+                thinking_mode=True,
+                temperature=0.0,
+                top_k=0,
+                max_new_tokens=64,
+                repetition_penalty=1.0,
+            )
+
+        self.assertEqual(result.response, "The exact result is 437.")
+        self.assertEqual(result.reasoning, "Use exact arithmetic.")
+        self.assertNotIn("Use exact arithmetic", result.response)
+        self.assertEqual(result.tool_events[0].output["result"]["value"], 437)
+        self.assertEqual(
+            message_snapshots[1][-2]["reasoning_content"],
+            "Use exact arithmetic.",
+        )
+        self.assertEqual(message_snapshots[1][-1]["role"], "tool")
+
     def test_personas_load_and_resolve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             personas_path = write_personas(Path(tmp) / "personas.json")
@@ -72,7 +125,7 @@ class ChatRuntimeTests(unittest.TestCase):
             end_json = tokenizer.token_to_id("</json>")
             model_cfg = ModelConfig(
                 vocab_size=tokenizer.vocab_size,
-                block_size=32,
+                block_size=128,
                 n_layer=1,
                 n_head=2,
                 n_embd=16,

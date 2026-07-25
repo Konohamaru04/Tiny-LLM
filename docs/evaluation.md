@@ -30,7 +30,7 @@ python scripts/eval_checkpoint.py --chat-config configs/chat.yaml --sft-config c
 Optional additions:
 
 - `--pretrain-config configs/pretrain_tiny.yaml`
-- `--checkpoint checkpoints/sft_tiny/best.pt`
+- `--checkpoint checkpoints/sft_moe_16k/best.safetensors`
 - `--prompts configs/eval_prompts.jsonl`
 - `--repetition-penalty 1.05`
 - `--device cpu`

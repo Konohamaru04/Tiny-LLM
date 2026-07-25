@@ -1,0 +1,58 @@
+seed: 20260724
+validation_fraction: 0.05
+request_timeout_seconds: 90
+request_delay_seconds: 1.5
+pretrain_output_dir: data/raw/public_fineweb
+sft_output_dir: data/public_sft
+
+# Revisions were verified on 2026-07-24. The downloader fails closed if an
+# upstream dataset changes, so new content is reviewed before entering training.
+sources:
+  - name: fineweb_edu
+    stage: pretrain
+    dataset: HuggingFaceFW/fineweb-edu
+    revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
+    config: sample-10BT
+    split: train
+    license: ODC-By-1.0; CommonCrawl Terms of Use also apply
+    limit: 5000
+    scan_limit: 7000
+    text_field: text
+    min_chars: 500
+    max_chars: 50000
+
+  - name: openr1_math
+    stage: sft
+    dataset: open-r1/OpenR1-Math-220k
+    revision: e4e141ec9dea9f8326f4d347be56105859b2bd68
+    config: default
+    split: train
+    license: Apache-2.0
+    transform: openr1
+    limit: 1000
+    scan_limit: 1800
+    max_chars: 120000
+
+  - name: dolci_tool_use
+    stage: sft
+    dataset: allenai/Dolci-Instruct-SFT-Tool-Use
+    revision: dc042846f0f2de0f15eedae3d6ced04223ed47eb
+    config: default
+    split: train
+    license: ODC-By-1.0; Ai2 Responsible Use Guidelines apply
+    transform: dolci_tool
+    limit: 2000
+    scan_limit: 2600
+    max_chars: 180000
+
+  - name: tmax_thinking_tools
+    stage: sft
+    dataset: allenai/tmax-sft
+    revision: 9d6ab7471ffa2884b2ef0cd2b7e5e22a027ff1b4
+    config: skill_tax_20260505_2.2k_combined_balanced_thinking_all
+    split: train
+    license: ODC-By; Ai2 Responsible Use Guidelines and upstream model terms apply
+    transform: tmax
+    limit: 300
+    scan_limit: 1200
+    max_chars: 300000

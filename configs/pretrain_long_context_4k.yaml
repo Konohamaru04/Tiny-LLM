@@ -1,6 +1,6 @@
 model:
   vocab_size: 8192
-  block_size: 2048
+  block_size: 4096
   n_layer: 8
   n_head: 6
   n_kv_head: 2
@@ -18,7 +18,7 @@ model:
   linear_bias: false
   initializer_range: 0.02
   residual_scale_init: true
-  attention_impl: auto
+  attention_impl: sdpa
   gradient_checkpointing: true
   moe_num_experts: 4
   moe_top_k: 2
@@ -32,38 +32,38 @@ data:
   tokenizer_model_path: data/processed/tokenizer.model
   train_manifest_path: data/processed/train_manifest.json
   val_manifest_path: data/processed/val_manifest.json
-  train_array_path: data/processed/lm_train.npy
-  val_array_path: data/processed/lm_val.npy
-  meta_path: data/processed/lm_meta.json
+  train_array_path: data/processed/lm_train_4k.npy
+  val_array_path: data/processed/lm_val_4k.npy
+  meta_path: data/processed/lm_meta_4k.json
 
 training:
-  output_dir: checkpoints/pretrain_moe
+  output_dir: checkpoints/pretrain_moe_4k
   seed: 0
   batch_size: 1
-  gradient_accumulation_steps: 32
-  learning_rate: 3.0e-4
-  min_lr: 3.0e-5
+  gradient_accumulation_steps: 16
+  learning_rate: 3.0e-5
+  min_lr: 3.0e-6
   warmup_steps: 100
-  max_steps: 2000
+  max_steps: 1000
   num_workers: 0
   weight_decay: 0.10
   grad_clip: 1.0
-  eval_interval: 200
-  eval_steps: 50
-  save_interval: 200
-  log_interval: 10
+  eval_interval: 100
+  eval_steps: 20
+  save_interval: 100
+  log_interval: 5
   patience: 10
   use_amp: true
-  resume_from: ""
-  metrics_jsonl_path: checkpoints/pretrain_moe/metrics.jsonl
-  metrics_csv_path: checkpoints/pretrain_moe/metrics.csv
+  resume_from: checkpoints/pretrain_moe/latest.safetensors
+  metrics_jsonl_path: checkpoints/pretrain_moe_4k/metrics.jsonl
+  metrics_csv_path: checkpoints/pretrain_moe_4k/metrics.csv
   sample_prompts_path: configs/eval_prompts.jsonl
-  sample_output_dir: checkpoints/pretrain_moe/sample_generations
-  sample_system_prompt: You are a practical technical assistant who explains things clearly.
+  sample_output_dir: checkpoints/pretrain_moe_4k/sample_generations
+  sample_system_prompt: You are a practical long-context assistant.
   sample_max_history_turns: 0
   sample_temperature: 0.4
   sample_top_k: 80
-  sample_max_new_tokens: 160
+  sample_max_new_tokens: 256
   sample_repetition_penalty: 1.05
   sample_json_mode: false
   compile_model: false
