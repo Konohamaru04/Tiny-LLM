@@ -212,6 +212,7 @@ def run_generation_eval(
             user_message=str(prompt["user"]),
             block_size=model.config.block_size,
             max_history_turns=max_history_turns,
+            max_new_tokens=max_new_tokens,
             json_mode=json_mode,
         )
         input_ids = torch.tensor([prompt_tokens], dtype=torch.long, device=device)

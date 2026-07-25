@@ -1,12 +1,12 @@
 {
-  "config": "E:\\Tiny-LLM\\configs\\public_datasets.yaml",
+  "config": "configs/public_datasets.yaml",
   "seed": 20260724,
   "validation_fraction": 0.05,
   "pretrain_documents": 5000,
   "sft_train_records": 3127,
   "sft_validation_records": 173,
-  "sft_train_path": "E:\\Tiny-LLM\\data\\public_sft\\train.jsonl",
-  "sft_validation_path": "E:\\Tiny-LLM\\data\\public_sft\\validation.jsonl",
+  "sft_train_path": "data/public_sft/train.jsonl",
+  "sft_validation_path": "data/public_sft/validation.jsonl",
   "sft_train_sha256": "25594fdbb05784e7c173a5a9bf55f9f85ee0515d31f57837f77f1c880a1fe553",
   "sft_validation_sha256": "795ce7d7b076335621edc31fb953ab8d905bd2904827c24f93dd1abb65906f73",
   "sources": [

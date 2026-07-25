@@ -27,6 +27,7 @@ def build_chat_prompt_tokens(
     json_mode: bool = False,
     tools: Sequence[dict] | None = None,
     thinking_mode: bool = False,
+    max_new_tokens: int = 1,
 ) -> List[int]:
     if block_size < 8:
         raise ValueError("block_size must be at least 8 for chat prompting.")
@@ -37,6 +38,7 @@ def build_chat_prompt_tokens(
         tokenizer,
         messages,
         block_size,
+        max_new_tokens=max_new_tokens,
         tools=tools,
         json_mode=json_mode,
         thinking_mode=thinking_mode,
@@ -114,13 +116,21 @@ def build_messages_prompt_tokens(
     messages: Sequence[dict],
     block_size: int,
     *,
+    max_new_tokens: int = 1,
     tools: Sequence[dict] | None = None,
     json_mode: bool = False,
     thinking_mode: bool = False,
 ) -> List[int]:
     if block_size < 8:
         raise ValueError("block_size must be at least 8 for chat prompting.")
-    token_limit = block_size - 1
+    if max_new_tokens <= 0:
+        raise ValueError("max_new_tokens must be > 0")
+    token_limit = block_size - max_new_tokens
+    if token_limit <= 0:
+        raise ValueError(
+            "max_new_tokens must be smaller than block_size so the prompt has "
+            "at least one token of context."
+        )
     working = [dict(message) for message in messages]
     prompt_tokens = _encode_messages_prompt(
         tokenizer,
@@ -268,13 +278,20 @@ def generate(
         raise ValueError(f"input_ids must have shape [batch, time], got {tuple(input_ids.shape)}")
     if max_new_tokens <= 0:
         raise ValueError("max_new_tokens must be > 0")
+    block_size = int(model.config.block_size)
+    if input_ids.size(1) + max_new_tokens > block_size:
+        raise ValueError(
+            "Prompt plus max_new_tokens exceeds the model context window: "
+            f"{input_ids.size(1)} + {max_new_tokens} > {block_size}. "
+            "Compact the prompt with the same max_new_tokens budget before generation."
+        )
 
     model.eval()
     stop_set = set(stop_token_ids or [])
 
     out = input_ids
     for _ in range(max_new_tokens):
-        idx_cond = out[:, -model.config.block_size :]
+        idx_cond = out
         logits, _ = model(idx_cond)
         next_token_logits = logits[:, -1, :]
         next_token_logits = apply_repetition_penalty(
@@ -311,13 +328,20 @@ def generate_stream(
         raise ValueError(f"input_ids must have shape [batch, time], got {tuple(input_ids.shape)}")
     if max_new_tokens <= 0:
         raise ValueError("max_new_tokens must be > 0")
+    block_size = int(model.config.block_size)
+    if input_ids.size(1) + max_new_tokens > block_size:
+        raise ValueError(
+            "Prompt plus max_new_tokens exceeds the model context window: "
+            f"{input_ids.size(1)} + {max_new_tokens} > {block_size}. "
+            "Compact the prompt with the same max_new_tokens budget before generation."
+        )
 
     model.eval()
     stop_set = set(stop_token_ids or [])
 
     out = input_ids
     for _ in range(max_new_tokens):
-        idx_cond = out[:, -model.config.block_size :]
+        idx_cond = out
         logits, _ = model(idx_cond)
         next_token_logits = logits[:, -1, :]
         next_token_logits = apply_repetition_penalty(

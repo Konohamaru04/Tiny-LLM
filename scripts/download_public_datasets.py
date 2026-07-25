@@ -429,6 +429,16 @@ def _validate_source_revision(source: dict[str, Any], metadata: dict[str, Any]) 
         raise RuntimeError(f"Dataset is no longer ungated public data: {source['dataset']}")
 
 
+def _repository_relative_path(path: str | Path) -> str:
+    resolved = resolve_path(path)
+    try:
+        return resolved.relative_to(ROOT).as_posix()
+    except ValueError as exc:
+        raise ValueError(
+            f"Manifest path must be inside the repository: {resolved}"
+        ) from exc
+
+
 def download(
     config_path: str | Path,
     *,
@@ -481,12 +491,12 @@ def download(
         if not isinstance(raw_source, dict):
             raise ValueError("Each dataset source must be an object")
         source = dict(raw_source)
-        dataset = str(source["dataset"])
-        metadata = fetch_dataset_metadata(dataset, timeout)
-        _validate_source_revision(source, metadata)
         stage = str(source["stage"])
         if stage_filter != "all" and stage != stage_filter:
             continue
+        dataset = str(source["dataset"])
+        metadata = fetch_dataset_metadata(dataset, timeout)
+        _validate_source_revision(source, metadata)
         sft_processed = sft_processed or stage == "sft"
         limit = int(source["limit"])
         scan_limit = int(source.get("scan_limit", max(limit * 2, limit)))
@@ -661,14 +671,14 @@ def download(
     for report in source_reports:
         merged_reports[str(report["name"])] = report
     manifest = {
-        "config": str(resolve_path(config_path)),
+        "config": _repository_relative_path(config_path),
         "seed": seed,
         "validation_fraction": validation_fraction,
         "pretrain_documents": pretrain_count,
         "sft_train_records": train_count,
         "sft_validation_records": val_count,
-        "sft_train_path": str(train_path),
-        "sft_validation_path": str(val_path),
+        "sft_train_path": _repository_relative_path(train_path),
+        "sft_validation_path": _repository_relative_path(val_path),
         "sft_train_sha256": sha256_file(train_path),
         "sft_validation_sha256": sha256_file(val_path),
         "sources": [

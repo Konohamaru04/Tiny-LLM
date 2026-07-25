@@ -14,6 +14,23 @@ ROLE_TOKENS = {
 }
 
 
+def assistant_generation_prefix(*, json_mode: bool, thinking_mode: bool) -> str:
+    """Return the canonical assistant prefix used for inference.
+
+    JSON marks the final-answer payload, so it follows ``<|final|>`` just as it
+    does in supervised assistant targets. Thinking starts first when enabled;
+    the model then emits ``<|final|>`` and the optional JSON marker after the
+    reasoning block.
+    """
+    prefix = "<|assistant|>\n"
+    if thinking_mode:
+        return prefix + "<|think|>\n"
+    prefix += "<|final|>\n"
+    if json_mode:
+        prefix += "<|json|>\n"
+    return prefix
+
+
 def normalize_chat_text(value: Any) -> str:
     if value is None:
         return ""
@@ -218,33 +235,12 @@ def encode_conversation(
             tokenizer,
             tokens,
             loss_mask,
-            "<|assistant|>\n",
+            assistant_generation_prefix(
+                json_mode=json_mode,
+                thinking_mode=thinking_mode,
+            ),
             supervised=False,
         )
-        if json_mode:
-            _append_segment(
-                tokenizer,
-                tokens,
-                loss_mask,
-                "<|json|>\n",
-                supervised=False,
-            )
-        if thinking_mode:
-            _append_segment(
-                tokenizer,
-                tokens,
-                loss_mask,
-                "<|think|>\n",
-                supervised=False,
-            )
-        else:
-            _append_segment(
-                tokenizer,
-                tokens,
-                loss_mask,
-                "<|final|>\n",
-                supervised=False,
-            )
 
     return tokens, loss_mask
 
